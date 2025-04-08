@@ -17,12 +17,13 @@ apt:
       keyid: DE15B14486CD377B9E876E1A234654DA9A296436
 
 packages:
+  - bash # Ensure bash is definitely installed early
   - azure-cli
   - kubectl
   - git
   - moby-cli
   - moby-engine
-  - wget # Ensure wget is installed
+  - wget
 
 # Initial MOTD with instructions and basic status
 write_files:
@@ -43,11 +44,12 @@ write_files:
       +------------------------------------------------------------+
 
 runcmd:
-  # Single script block for robust error handling and granular MOTD updates
-  - |
+  # CORRECTED: Explicitly invoke bash using a heredoc to ensure correct interpreter
+  - bash <<'EOF'
     #!/bin/bash
-    # Use pipefail along with -e to catch errors in pipelines
-    set -eo pipefail
+    # Ensure script runs under bash and handle errors robustly
+    # Exit on error (-e), error on undefined variable (-u), error on pipeline failure (-o pipefail)
+    set -euo pipefail
 
     # --- Configuration ---
     TOTAL_STEPS=8
@@ -55,13 +57,11 @@ runcmd:
 
     # --- Helper Function: update_motd ---
     # (Function definition remains the same as previous correct version)
-    # Args: $1: Step number (e.g., "1") or status ("ERROR"/"SUCCESS")
-    #       $2: Status message (e.g., "Installing prerequisites")
-    #       $3+: Optional detail lines
     update_motd() {
         local step_num="$1"
         local status_msg="$2"
         shift 2 # Remove the first two arguments, remaining are detail lines
+        # Ensure details is treated as an array even if empty
         local details=("$@")
         local text_width=$((MOTD_WIDTH - 4)) # Width available for text inside '* ... *'
 
@@ -76,7 +76,7 @@ runcmd:
         else
             step_info="Step $step_num of $TOTAL_STEPS: $status_msg"
         fi
-        # Truncate step_info if it's too long (less likely but defensive)
+        # Truncate step_info if it's too long
         if [ ${#step_info} -gt $text_width ]; then
              step_info="$(echo "$step_info" | head -c $((text_width - 3)))..."
         fi
@@ -91,14 +91,16 @@ runcmd:
         fi
 
         # Detail Lines
+        # Loop gracefully handles empty details array
         for detail in "${details[@]}"; do
             # Truncate long details to fit
-            if [ ${#detail} -gt $text_width ]; then
-                detail="$(echo "$detail" | head -c $((text_width - 3)))..."
+            local truncated_detail="$detail"
+            if [ ${#truncated_detail} -gt $text_width ]; then
+                truncated_detail="$(echo "$truncated_detail" | head -c $((text_width - 3)))..."
             fi
-            padding=$(( (text_width - ${#detail}) / 2 ))
-            remainder=$(( (text_width - ${#detail}) % 2 ))
-            printf '| %*s%s%*s |\n' $padding "" "$detail" $((padding + remainder)) "" >> /etc/motd
+            local detail_padding=$(( (text_width - ${#truncated_detail}) / 2 ))
+            local detail_remainder=$(( (text_width - ${#truncated_detail}) % 2 ))
+            printf '| %*s%s%*s |\n' $detail_padding "" "$truncated_detail" $((detail_padding + detail_remainder)) "" >> /etc/motd
         done
 
         # Empty line for spacing before footer if details were printed
@@ -113,11 +115,11 @@ runcmd:
 
 
     # --- Error Handling Function ---
-    # Now gets context from BASH_LINENO, BASH_COMMAND, etc.
     handle_error() {
         local exit_code=$?
         # BASH_LINENO is an array. [0] is the line number where the error occurred.
-        local line_no=${BASH_LINENO[0]}
+        # Add fallback in case BASH_LINENO isn't populated (highly unlikely if running in bash)
+        local line_no=${BASH_LINENO[0]:-unknown}
         # BASH_COMMAND contains the command that failed.
         local command="${BASH_COMMAND:-unknown}"
 
@@ -135,7 +137,7 @@ runcmd:
     }
 
     # --- Trap ERR signal ---
-    # CORRECTED: Provide the function name directly without quotes or args.
+    # This should now work correctly as bash is guaranteed
     trap handle_error ERR
 
     # --- Start Provisioning Steps ---
@@ -143,12 +145,21 @@ runcmd:
     update_motd "..." "Initializing Variables"
 
     # Set environment variables used in later steps.
+    # Use default values if template variables aren't replaced
     MYUSER=$(id -un 1000)
     MYHOME=$(eval echo ~$MYUSER)
     MYWORK="/workspaces" # Assuming this directory exists or is standard
-    LOCATION={{{location}}}
-    RESOURCE_GROUP={{{resource_group}}}
-    RESOURCE_NAME={{{resource_name}}}
+    LOCATION="${LOCATION:-{{{location}}}"
+    RESOURCE_GROUP="${RESOURCE_GROUP:-{{{resource_group}}}}"
+    RESOURCE_NAME="${RESOURCE_NAME:-{{{resource_name}}}}"
+
+    # Validate required variables are set (optional but recommended)
+    if [[ "$LOCATION" == "{{{location}}}" || "$RESOURCE_GROUP" == "{{{resource_group}}}" || "$RESOURCE_NAME" == "{{{resource_name}}}" ]]; then
+        update_motd "ERROR" "Missing Required Variables!" \
+            "LOCATION, RESOURCE_GROUP, or RESOURCE_NAME was not provided." \
+            "Cannot proceed."
+        exit 1
+    fi
 
 
     # -------------------------
@@ -162,63 +173,81 @@ runcmd:
     SYSTEM_NAME=$(uname -r)
     # moby-engine is installed via packages, skip docker.io unless needed
 
-    if ! which k3d > /dev/null 2>&1; then
+    if ! command -v k3d &> /dev/null; then
         update_motd "1" "Installing prerequisites" "Downloading & Installing k3d..."
         wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+    else
+         update_motd "1" "Installing prerequisites" "k3d already installed."
     fi
 
-    if ! which helm > /dev/null 2>&1; then
+
+    if ! command -v helm &> /dev/null; then
         update_motd "1" "Installing prerequisites" "Downloading & Installing Helm..."
         # Use curl -fsSL for better error checking in pipelines
         curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    else
+         update_motd "1" "Installing prerequisites" "Helm already installed."
     fi
 
-    if ! which step > /dev/null 2>&1; then
+    if ! command -v step &> /dev/null; then
         update_motd "1" "Installing prerequisites" "Downloading & Installing Step CLI..."
         STEP_VERSION="0.28.0"
         STEP_DEB="step-cli_${STEP_VERSION}_amd64.deb"
         wget -q "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/${STEP_DEB}" -P /tmp
         dpkg -i "/tmp/${STEP_DEB}"
         rm "/tmp/${STEP_DEB}"
+    else
+        update_motd "1" "Installing prerequisites" "Step CLI already installed."
     fi
+
 
     # Check Azure CLI (already installed via packages, but confirm `az` command)
     update_motd "1" "Installing prerequisites" "Verifying Azure CLI..."
-    if ! which az > /dev/null 2>&1; then
+    if ! command -v az &> /dev/null; then
        update_motd "ERROR" "Azure CLI Installation Failed!" "az command not found after package install."
        exit 1 # Force failure if package didn't work
     fi
     update_motd "1" "Installing prerequisites" "Installing AKS CLI components..."
+    # Run this even if az is present, might need updates/specific versions
     az aks install-cli --kubelogin-version 0.1.3 --aks-preview-cli-version 0.6.5 || echo "Warning: aks install-cli command finished with non-zero exit code."
 
 
-    update_motd "1" "Installing prerequisites" "Adding Azure CLI extensions..."
+    update_motd "1" "Installing prerequisites" "Adding/Updating Azure CLI extensions..."
     # Allow extension add to fail sometimes, just print warning
-    az extension add --upgrade --name azure-iot-ops || echo "Warning: Failed to add or upgrade 'azure-iot-ops' extension."
-    az extension add --upgrade --name connectedk8s || echo "Warning: Failed to add or upgrade 'connectedk8s' extension."
+    az extension add --upgrade --name azure-iot-ops &> /dev/null || echo "Warning: Failed to add or upgrade 'azure-iot-ops' extension."
+    az extension add --upgrade --name connectedk8s &> /dev/null || echo "Warning: Failed to add or upgrade 'connectedk8s' extension."
 
 
-    if ! which k9s > /dev/null 2>&1; then
+    if ! command -v k9s &> /dev/null; then
         update_motd "1" "Installing prerequisites" "Downloading & Installing k9s..."
         # Getting latest URL robustly
         K9S_DEB_URL=$(curl -fsSL https://api.github.com/repos/derailed/k9s/releases/latest | grep 'browser_download_url.*linux_amd64.deb' | head -n 1 | cut -d '"' -f 4)
         if [[ -n "$K9S_DEB_URL" ]]; then
-            wget -q "$K9S_DEB_URL" -P /tmp/k9s.deb
-            dpkg -i /tmp/k9s.deb
-            rm /tmp/k9s.deb # Clean up downloaded file
+             # Create temporary file securely
+            K9S_TMP_DEB=$(mktemp --suffix=.deb)
+            wget -qO "$K9S_TMP_DEB" "$K9S_DEB_URL"
+            dpkg -i "$K9S_TMP_DEB"
+            rm "$K9S_TMP_DEB" # Clean up downloaded file
         else
             update_motd "1" "Installing prerequisites" "Warning: Could not determine k9s latest deb URL. Skipping."
         fi
+    else
+        update_motd "1" "Installing prerequisites" "k9s already installed."
     fi
 
     # -------------------------
     # Step 2 of 8: Create k3d cluster.
     # -------------------------
-    update_motd "2" "Creating k3d cluster" "Deleting existing cluster (if any)..."
-    k3d cluster delete || true # Allow failure if cluster doesn't exist
+    update_motd "2" "Creating k3d cluster" "Checking existing k3d cluster..."
+    # If cluster exists and is running, maybe skip? For simplicity, we recreate.
+    if k3d cluster list | grep -q '^k3s-default'; then
+        update_motd "2" "Creating k3d cluster" "Deleting existing k3s-default cluster..."
+        k3d cluster delete k3s-default || true # Allow failure if deletion has issues but continue
+    fi
 
-    update_motd "2" "Creating k3d cluster" "Creating new cluster with registry & ports..." "This may take a few minutes."
-    k3d cluster create \
+
+    update_motd "2" "Creating k3d cluster" "Creating new cluster 'k3s-default'..." "This may take a few minutes."
+    k3d cluster create k3s-default \
       -p '1883:1883@loadbalancer' \
       -p '8883:8883@loadbalancer' \
       -p '8884:8884@loadbalancer' \
@@ -227,20 +256,17 @@ runcmd:
 
     update_motd "2" "Creating k3d cluster" "Configuring kubectl context..."
     mkdir -p "$MYHOME/.kube"
+    # Let k3d merge into the default config directly
+    k3d kubeconfig merge k3s-default --kubeconfig-merge-default
+    # Ensure user owns their config
     chown "$MYUSER:$MYUSER" "$MYHOME/.kube"
-    # Use k3d kubeconfig merge default --kubeconfig-merge-default to write to default location
-    # Or get path and copy as before:
-    KUBECONFIG_PATH=$(k3d kubeconfig write k3s-default)
-    if [[ -z "$KUBECONFIG_PATH" ]]; then
-        update_motd "ERROR" "Failed to get kubeconfig path from k3d!"
-        exit 1
-    fi
-    install -D -o "$MYUSER" -g "$MYUSER" -m 600 "$KUBECONFIG_PATH" "$MYHOME/.kube/config"
+    chown "$MYUSER:$MYUSER" "$MYHOME/.kube/config"
+    chmod 600 "$MYHOME/.kube/config"
 
     # Set context for root user running the script and the target user
     kubectl config use-context k3d-k3s-default
     kubectl config set-context --current --namespace=azure-iot-operations
-    # Ensure user context is also set (though usually done via login)
+    # Ensure user context is also set (run as the user)
     sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config use-context k3d-k3s-default
     sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config set-context --current --namespace=azure-iot-operations
 
@@ -258,9 +284,12 @@ runcmd:
     # -------------------------
     # Step 4 of 8: Create Storage Account.
     # -------------------------
-    UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 18)
-    STORAGE_ACCOUNT="st${UNIQUE_SUFFIX}"
-    STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | head -c 24)
+    # Generate a unique name for the storage account
+    # Max 24 chars, lowercase alphanumeric
+    UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10) # Use hash for uniqueness
+    STORAGE_ACCOUNT="st$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$UNIQUE_SUFFIX"
+    STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | head -c 24)
+
 
     update_motd "4" "Azure Storage Account" "Checking for account: $STORAGE_ACCOUNT"
     # Check existence using 'az storage account show' and check exit code
@@ -281,11 +310,13 @@ runcmd:
     # -------------------------
     # Step 5 of 8: Create Schema Registry.
     # -------------------------
-    SR_UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 18)
-    SCHEMA_REGISTRY="sr${SR_UNIQUE_SUFFIX}"
-    SCHEMA_REGISTRY_NAMESPACE="srn${SR_UNIQUE_SUFFIX}"
-    SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | head -c 24)
-    SCHEMA_REGISTRY_NAMESPACE=$(echo "$SCHEMA_REGISTRY_NAMESPACE" | head -c 24)
+    # Generate unique names
+    SR_SUFFIX_HASH=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10)
+    SCHEMA_REGISTRY="sr$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$SR_SUFFIX_HASH"
+    SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]' | head -c 24)
+    SCHEMA_REGISTRY_NAMESPACE="srn$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$SR_SUFFIX_HASH"
+    SCHEMA_REGISTRY_NAMESPACE=$(echo "$SCHEMA_REGISTRY_NAMESPACE" | tr '[:upper:]' '[:lower:]' | head -c 24)
+
 
     update_motd "5" "Azure Schema Registry" "Checking for registry: $SCHEMA_REGISTRY"
     if az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --output none &> /dev/null; then
@@ -300,7 +331,8 @@ runcmd:
     # -------------------------
     update_motd "6" "Azure IoT Operations Init" "Checking initialization status..." "Cluster: $RESOURCE_NAME"
     # Check if key deployment exists
-    if ! kubectl get deployment aio-dp-reader-proxy -n azure-iot-operations &> /dev/null; then
+    # Use a known CRD or namespace resource as a check
+    if ! kubectl get ns azure-iot-operations &> /dev/null || ! kubectl get deployment mq-operator -n azure-iot-operations &> /dev/null; then
         update_motd "6" "Azure IoT Operations Init" "Running az iot ops init..." "Cluster: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "(Using --no-tls for k3d)"
         # Assuming --no-tls for k3d simplicity, adjust if using KeyVault
         az iot ops init --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --no-tls --no-progress
@@ -320,8 +352,8 @@ runcmd:
     INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
     update_motd "7" "Azure IoT Ops Instance" "Checking for instance: $INSTANCE_NAME"
-    # Check if key deployment exists
-    if ! kubectl get deployment aio-mq-dmqtt-frontend -n azure-iot-operations &> /dev/null; then
+    # Check if the Broker resource exists as an indicator
+    if ! kubectl get broker "$INSTANCE_NAME" -n azure-iot-operations &> /dev/null; then
         update_motd "7" "Azure IoT Ops Instance" "Creating instance: $INSTANCE_NAME..." "Cluster: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "(Low profile, RF=1)"
         az iot ops instance create \
             --cluster "$RESOURCE_NAME" \
@@ -345,7 +377,9 @@ runcmd:
     # -------------------------
     update_motd "8" "Finalizing Setup" "Ensuring kubeconfig permissions..." "User: $MYUSER"
     # Re-apply ownership/permissions just in case
-    install -D -o "$MYUSER" -g "$MYUSER" -m 600 "$MYHOME/.kube/config" "$MYHOME/.kube/config"
+    chown "$MYUSER:$MYUSER" "$MYHOME/.kube/config"
+    chmod 600 "$MYHOME/.kube/config"
+
 
     update_motd "8" "Finalizing Setup" "Setting workspace ownership..." "Path: $MYWORK"
     mkdir -p "$MYWORK"
@@ -364,3 +398,6 @@ runcmd:
         "Try: k9s"
 
     echo "Cloud-init script finished successfully."
+
+    # Final EOF marker for the heredoc, must be at the start of the line
+    EOF
