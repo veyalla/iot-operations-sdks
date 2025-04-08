@@ -41,24 +41,47 @@ write_files:
         shift 2
         local details=("$@")
 
-        cat > /etc/motd << EOL
-+------------------------------------------------------------+
-|          Azure IoT Operations Dev VM Provisioning          |
-+------------------------------------------------------------+
-| Status: Step $step_num of $TOTAL_STEPS - $status_msg
-|
-EOL
+        {
+          echo "+------------------------------------------------------------+"
+          echo "|          Azure IoT Operations Dev VM Provisioning          |"
+          echo "+------------------------------------------------------------+"
+          echo "| Status: Step $step_num of $TOTAL_STEPS - $status_msg"
+          echo "|"
 
-        for detail in "${details[@]}"; do
-          echo "| $detail" >> /etc/motd
-        done
+          for detail in "${details[@]}"; do
+            echo "| $detail"
+          done
 
-        cat >> /etc/motd << EOL
-|
-| Time: $(date)
-| Log: $LOG_FILE
-+------------------------------------------------------------+
-EOL
+          echo "|"
+          echo "| Time: $(date)"
+          echo "| Log: $LOG_FILE"
+          echo "+------------------------------------------------------------+"
+        } > /etc/motd
+      }
+
+      # Final status function
+      final_status() {
+        {
+          echo "+------------------------------------------------------------+"
+          echo "|          Azure IoT Operations Dev VM Provisioning          |"
+          echo "+------------------------------------------------------------+"
+          echo "| Status: SETUP COMPLETE!                                    |"
+          echo "|                                                            |"
+          echo "| Your Azure IoT Operations environment is ready to use      |"
+          echo "|                                                            |"
+          echo "| Environment Details:                                       |"
+          echo "| - Resource Group:   $RESOURCE_GROUP"
+          echo "| - K8s Resource:     $RESOURCE_NAME"
+          echo "| - Storage Account:  $STORAGE_ACCOUNT"
+          echo "| - Schema Registry:  $SCHEMA_REGISTRY"
+          echo "| - IoT Ops Instance: $INSTANCE_NAME"
+          echo "|                                                            |"
+          echo "| Useful commands:                                           |"
+          echo "| - kubectl get pods -A                                      |"
+          echo "| - kubectl get broker -A                                    |"
+          echo "| - k9s                                                      |"
+          echo "+------------------------------------------------------------+"
+        } > /etc/motd
       }
 
       # 1. Set up repositories
@@ -164,7 +187,7 @@ EOL
         --resource-group "$RESOURCE_GROUP" \
         --location "$LOCATION"
 
-      # 9. Create storage account & schema registry
+      # 9. Create storage account
       # Generate unique storage account name
       UNIQUE_HASH=$(echo "$VM_NAME-$SUBSCRIPTION_ID" | md5sum | head -c 8)
       STORAGE_ACCOUNT="stiot${UNIQUE_HASH}"
@@ -185,6 +208,7 @@ EOL
 
       SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
 
+      # 10. Create schema registry
       # Generate unique schema registry name
       SCHEMA_REGISTRY="sriot${UNIQUE_HASH}"
       SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]')
@@ -205,7 +229,7 @@ EOL
         --registry-namespace "default" \
         --sa-resource-id "$SA_ID"
 
-      # 10. Initialize IoT Operations
+      # 11. Initialize IoT Operations
       update_status "11" "Initializing IoT Operations" \
         "Command: az iot ops init" \
         "Cluster: $RESOURCE_NAME" \
@@ -217,7 +241,7 @@ EOL
         --resource-group "$RESOURCE_GROUP" \
         --no-tls
 
-      # 11. Create IoT Ops instance
+      # 12. Create IoT Ops instance
       SR_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
       INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
@@ -241,28 +265,8 @@ EOL
         --broker-backend-rf 1 \
         --broker-mem-profile Low
 
-      # 12. Finalize
-      cat > /etc/motd << EOL
-+------------------------------------------------------------+
-|          Azure IoT Operations Dev VM Provisioning          |
-+------------------------------------------------------------+
-| Status: SETUP COMPLETE!                                    |
-|                                                            |
-| Your Azure IoT Operations environment is ready to use      |
-|                                                            |
-| Environment Details:                                       |
-| - Resource Group:  $RESOURCE_GROUP                         |
-| - K8s Resource:    $RESOURCE_NAME                          |
-| - Storage Account: $STORAGE_ACCOUNT                        |
-| - Schema Registry: $SCHEMA_REGISTRY                        |
-| - IoT Ops Instance: $INSTANCE_NAME                         |
-|                                                            |
-| Useful commands:                                           |
-| - kubectl get pods -A                                      |
-| - kubectl get broker -A                                    |
-| - k9s                                                      |
-+------------------------------------------------------------+
-EOL
+      # Final status with completion information
+      final_status
 
       # Create workspace
       mkdir -p "$MYWORK"
@@ -305,4 +309,4 @@ runcmd:
   - systemctl enable aio-provision.service
   - systemctl start aio-provision.service
   # But also make our direct execution work
-  - nohup /root/provision_ops_vm.sh &
+  - bash -c "nohup /root/provision_ops_vm.sh &"
