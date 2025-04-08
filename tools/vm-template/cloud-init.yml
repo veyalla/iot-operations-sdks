@@ -62,9 +62,6 @@ write_files:
           done
 
           echo "|"
-          echo "| Time: $(date)"
-          echo "| Log: $LOG_FILE"
-          echo "|"
           echo "| To watch progress in real-time: $ watch cat /etc/motd"
           echo "+------------------------------------------------------------+"
         } > /etc/motd
@@ -89,9 +86,6 @@ write_files:
             echo "| $detail"
           done
 
-          echo "|"
-          echo "| Time: $(date)"
-          echo "| Log: $LOG_FILE"
           echo "+------------------------------------------------------------+"
         } > /etc/motd
       }
@@ -141,10 +135,31 @@ write_files:
         apt-get install -y --no-install-recommends docker.io; 
       }
 
-      apt-get install -y --no-install-recommends azure-cli || { 
-        echo "Failed to install azure-cli, retrying..."; 
-        sleep 10; 
-        apt-get install -y --no-install-recommends azure-cli; 
+      # Install Azure CLI using the improved method
+      echo "Installing Azure CLI prerequisites..."
+      apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+
+      echo "Adding Azure CLI repository..."
+      mkdir -p /etc/apt/keyrings
+      curl -sLS https://packages.microsoft.com/keys/microsoft.asc | \
+        gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
+      chmod go+r /etc/apt/keyrings/microsoft.gpg
+
+      AZ_DIST=$(lsb_release -cs)
+      echo "Types: deb
+      URIs: https://packages.microsoft.com/repos/azure-cli/
+      Suites: ${AZ_DIST}
+      Components: main
+      Architectures: $(dpkg --print-architecture)
+      Signed-by: /etc/apt/keyrings/microsoft.gpg" | tee /etc/apt/sources.list.d/azure-cli.sources
+
+      apt-get update -y
+
+      echo "Installing Azure CLI..."
+      apt-get install -y azure-cli || {
+        echo "Failed to install azure-cli, retrying...";
+        sleep 10;
+        apt-get install -y azure-cli;
       }
 
       apt-get install -y --no-install-recommends kubectl || { 
