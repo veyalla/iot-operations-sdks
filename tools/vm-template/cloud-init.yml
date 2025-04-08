@@ -1,10 +1,8 @@
 #cloud-config
 
-# Controls package update/upgrade behavior
 package_update: true
 package_upgrade: true
 
-# Configures APT sources and keys
 apt:
   preserve_sources_list: true
   sources:
@@ -19,7 +17,6 @@ apt:
       source: 'deb [arch=amd64 signed-by=$KEY_FILE] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /'
       keyid: DE15B14486CD377B9E876E1A234654DA9A296436
 
-# List of packages to install
 packages:
   - bash
   - azure-cli
@@ -36,27 +33,28 @@ packages:
 # Writes files to the instance
 write_files:
   # 1. Initial MOTD
-  - path: /etc/motd
-    owner: root:root
-    permissions: '0644'
-    content: |
-      +------------------------------------------------------------+
-      |          Azure IoT Operations Dev VM Provisioning          |
-      +------------------------------------------------------------+
-      | Status: Starting Up...                                     |
-      | Action: Running cloud-init setup script                    |
-      |                                                            |
-      | To monitor progress in real-time (from another terminal):  |
-      | $ watch -n 1 -t cat /etc/motd                              |
-      |                                                            |
-      | Please wait for configuration to complete.                 |
-      +------------------------------------------------------------+
+  - path: /etc/motd               # Indentation Level 1 (2 spaces)
+    owner: root:root            # Indentation Level 2 (4 spaces)
+    permissions: '0644'         # Indentation Level 2
+    content: |                  # Indentation Level 2
+      +------------------------------------------------------------+ # Indentation Level 3 (6 spaces)
+      |          Azure IoT Operations Dev VM Provisioning          | # Indentation Level 3
+      +------------------------------------------------------------+ # Indentation Level 3
+      | Status: Starting Up...                                     | # Indentation Level 3
+      | Action: Running cloud-init setup script                    | # Indentation Level 3
+      |                                                            | # Indentation Level 3
+      | To monitor progress in real-time (from another terminal):  | # Indentation Level 3
+      | $ watch -n 1 -t cat /etc/motd                              | # Indentation Level 3
+      |                                                            | # Indentation Level 3
+      | Please wait for configuration to complete.                 | # Indentation Level 3
+      +------------------------------------------------------------+ # Indentation Level 3
 
   # 2. The main provisioning script
-  - path: /root/provision_ops_vm.sh
-    owner: root:root
-    permissions: '0700' # rwx------ (executable for root)
-    content: |
+  - path: /root/provision_ops_vm.sh # Indentation Level 1 (2 spaces)
+    owner: root:root            # Indentation Level 2 (4 spaces)
+    permissions: '0700'         # Indentation Level 2
+    # CORRECTED: Ensure all lines below this start at Indentation Level 3 (6 spaces)
+    content: |                  # Indentation Level 2
       #!/bin/bash
       # Ensure script runs under bash and handle errors robustly
       # Exit on error (-e), error on undefined variable (-u), error on pipeline failure (-o pipefail)
@@ -70,10 +68,11 @@ write_files:
       # (Function definition remains the same as previous correct version)
       update_motd() {
           local step_num="$1"
-          local status_msg="<span class="math-inline">2"
-shift 2 \# Remove the first two arguments, remaining are detail lines
-\# Ensure details is treated as an array even if empty
-local details\=\("</span>@")
+          local status_msg="$2"
+          # *** THIS BLOCK HAD THE INDENTATION ERROR ***
+          shift 2 # Remove the first two arguments, remaining are detail lines
+          # Ensure details is treated as an array even if empty
+          local details=("$@")
           local text_width=$((MOTD_WIDTH - 4)) # Width available for text inside '* ... *'
 
           # Header
@@ -88,28 +87,29 @@ local details\=\("</span>@")
               step_info="Step $step_num of $TOTAL_STEPS: $status_msg"
           fi
           # Truncate step_info if it's too long
-          if [ ${#step_info} -gt <span class="math-inline">text\_width \]; then
-step\_info\="</span>(echo "$step_info" | head -c <span class="math-inline">\(\(text\_width \- 3\)\)\)\.\.\."
-fi
-local padding\=</span>(( (text_width - <span class="math-inline">\{\#step\_info\}\) / 2 \)\)
-local remainder\=</span>(( (text_width - ${#step_info}) % 2 ))
+          if [ ${#step_info} -gt $text_width ]; then
+               step_info="$(echo "$step_info" | head -c $((text_width - 3)))..."
+          fi
+          local padding=$(( (text_width - ${#step_info}) / 2 ))
+          local remainder=$(( (text_width - ${#step_info}) % 2 ))
           printf '| %*s%s%*s |\n' $padding "" "$step_info" $((padding + remainder)) "" >> /etc/motd
 
           # Separator (optional, if details exist)
           if [ ${#details[@]} -gt 0 ]; then
-               printf '|%.0s' $(seq 1 <span class="math-inline">\(\(MOTD\_WIDTH\-2\)\)\) \>\> /etc/motd
-echo '\|' \>\> /etc/motd
-fi
-\# Detail Lines
-\# Loop gracefully handles empty details array
-for detail in "</span>{details[@]}"; do
+               printf '|%.0s' $(seq 1 $((MOTD_WIDTH-2))) >> /etc/motd
+               echo '|' >> /etc/motd
+          fi
+
+          # Detail Lines
+          # Loop gracefully handles empty details array
+          for detail in "${details[@]}"; do
               # Truncate long details to fit
               local truncated_detail="$detail"
-              if [ ${#truncated_detail} -gt <span class="math-inline">text\_width \]; then
-truncated\_detail\="</span>(echo "$truncated_detail" | head -c <span class="math-inline">\(\(text\_width \- 3\)\)\)\.\.\."
-fi
-local detail\_padding\=</span>(( (text_width - <span class="math-inline">\{\#truncated\_detail\}\) / 2 \)\)
-local detail\_remainder\=</span>(( (text_width - ${#truncated_detail}) % 2 ))
+              if [ ${#truncated_detail} -gt $text_width ]; then
+                  truncated_detail="$(echo "$truncated_detail" | head -c $((text_width - 3)))..."
+              fi
+              local detail_padding=$(( (text_width - ${#truncated_detail}) / 2 ))
+              local detail_remainder=$(( (text_width - ${#truncated_detail}) % 2 ))
               printf '| %*s%s%*s |\n' $detail_padding "" "$truncated_detail" $((detail_padding + detail_remainder)) "" >> /etc/motd
           done
 
@@ -119,63 +119,70 @@ local detail\_remainder\=</span>(( (text_width - ${#truncated_detail}) % 2 ))
            fi
 
           # Footer
-          printf '+%.0s' $(seq 1 <span class="math-inline">MOTD\_WIDTH\) \>\> /etc/motd
-echo \>\> /etc/motd
-\}
-\# \-\-\- Error Handling Function \-\-\-
-handle\_error\(\) \{
-local exit\_code\=</span>?
-          # BASH_LINENO is an array. [0] is the line number where the error occurred.
-          local line_no=<span class="math-inline">\{BASH\_LINENO\[0\]\:\-unknown\}
-\# BASH\_COMMAND contains the command that failed\.
-local command\="</span>{BASH_COMMAND:-unknown}"
+          printf '+%.0s' $(seq 1 $MOTD_WIDTH) >> /etc/motd
+          echo >> /etc/motd
+      }
 
-          # CORRECTED: Escape double quotes in the command before passing to update_motd
-          local safe_command_hint=$(echo "<span class="math-inline">command" \| sed 's/"/\\\\"/g'\)
-\# Further sanitize for control characters just in case
-safe\_command\_hint\=</span>(echo "$safe_command_hint" | tr -dc '[:print:]')
+      # --- Error Handling Function ---
+      handle_error() {
+          local exit_code=$?
+          # BASH_LINENO is an array. [0] is the line number where the error occurred.
+          local line_no=${BASH_LINENO[0]:-unknown}
+          # BASH_COMMAND contains the command that failed.
+          local command="${BASH_COMMAND:-unknown}"
+
+          # Escape double quotes in the command before passing to update_motd
+          local safe_command_hint=$(echo "$command" | sed 's/"/\\"/g')
+          # Further sanitize for control characters just in case
+          safe_command_hint=$(echo "$safe_command_hint" | tr -dc '[:print:]\t') # Allow printables and tab
 
           # Update MOTD with error details using the helper function
           update_motd "ERROR" "PROVISIONING FAILED!" \
               "Script: /root/provision_ops_vm.sh" \
               "Error on or near line: ${line_no}" \
               "Exit Code: ${exit_code}" \
-              "Failed Command Hint: ${safe_command_hint}" \ # Use sanitized version
+              "Failed Command Hint: ${safe_command_hint}" \
               "Check cloud-init logs:" \
               "/var/log/cloud-init.log" \
               "/var/log/cloud-init-output.log"
 
           # Exit with the original error code
-          exit <span class="math-inline">exit\_code
-\}
-\# \-\-\- Trap ERR signal \-\-\-
-\# This will now work correctly as the script file is executed by bash
-trap handle\_error ERR
-\# \-\-\- Start Provisioning Steps \-\-\-
-update\_motd "\.\.\." "Initializing Variables & Environment"
-\# Set environment variables used in later steps\.
-\# Make sure these are exported if needed by sub\-processes like az commands
-export MYUSER\=</span>(id -un 1000)
-      export MYHOME=$(eval echo ~<span class="math-inline">MYUSER\)
-export MYWORK\="/workspaces"
-export LOCATION\="</span>{LOCATION:-{{{location}}}"
-      export RESOURCE_GROUP="<span class="math-inline">\{RESOURCE\_GROUP\:\-\{\{\{resource\_group\}\}\}\}"
-export RESOURCE\_NAME\="</span>{RESOURCE_NAME:-{{{resource_name}}}}"
+          exit $exit_code
+      }
+
+      # --- Trap ERR signal ---
+      trap handle_error ERR
+
+      # --- Start Provisioning Steps ---
+
+      update_motd "..." "Initializing Variables & Environment"
+
+      # Set environment variables used in later steps.
+      # Make sure these are exported if needed by sub-processes like az commands
+      export MYUSER=$(id -un 1000)
+      export MYHOME=$(eval echo ~$MYUSER)
+      export MYWORK="/workspaces"
+      export LOCATION="${LOCATION:-{{{location}}}"
+      export RESOURCE_GROUP="${RESOURCE_GROUP:-{{{resource_group}}}}"
+      export RESOURCE_NAME="${RESOURCE_NAME:-{{{resource_name}}}}"
 
       # Validate required variables are set
-      if [[ "$LOCATION" == "{{{location}}}" || "$RESOURCE_GROUP" == "{{{resource_group}}}" || "<span class="math-inline">RESOURCE\_NAME" \=\= "\{\{\{resource\_name\}\}\}" \]\]; then
-update\_motd "ERROR" "Missing Required Variables\!" \\
-"LOCATION, RESOURCE\_GROUP, or RESOURCE\_NAME was not provided\." \\
-"Check cloud\-init user\-data\."
-exit 1
-fi
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-\# Step 1 of 8\: Install prerequisites\.
-\# \(Rest of the steps remain the same as the previous correct version\)
-\# \.\.\. \(Ensure all steps 1\-8 are present here as before\) \.\.\.
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-update\_motd "1" "Installing prerequisites" "Checking package tools\.\.\."
-SYSTEM\_NAME\=</span>(uname -r)
+      if [[ "$LOCATION" == "{{{location}}}" || "$RESOURCE_GROUP" == "{{{resource_group}}}" || "$RESOURCE_NAME" == "{{{resource_name}}}" ]]; then
+          update_motd "ERROR" "Missing Required Variables!" \
+              "LOCATION, RESOURCE_GROUP, or RESOURCE_NAME was not provided." \
+              "Check cloud-init user-data."
+          exit 1
+      fi
+
+
+      # -------------------------
+      # Step 1 of 8: Install prerequisites.
+      # (Rest of the steps remain the same as the previous correct version)
+      # ... (Ensure all steps 1-8 are present here as before, correctly indented) ...
+      # -------------------------
+      update_motd "1" "Installing prerequisites" "Checking package tools..."
+
+      SYSTEM_NAME=$(uname -r)
 
       if ! command -v k3d &> /dev/null; then
           update_motd "1" "Installing prerequisites" "Downloading & Installing k3d..."
@@ -198,7 +205,7 @@ SYSTEM\_NAME\=</span>(uname -r)
           STEP_VERSION="0.28.0"
           STEP_DEB="step-cli_${STEP_VERSION}_amd64.deb"
           STEP_TMP_DEB=$(mktemp --suffix=.deb)
-          wget -qO "<span class="math-inline">STEP\_TMP\_DEB" "https\://github\.com/smallstep/cli/releases/download/v</span>{STEP_VERSION}/${STEP_DEB}"
+          wget -qO "$STEP_TMP_DEB" "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/${STEP_DEB}"
           dpkg -i "$STEP_TMP_DEB"
           rm "$STEP_TMP_DEB"
       else
@@ -226,9 +233,9 @@ SYSTEM\_NAME\=</span>(uname -r)
           update_motd "1" "Installing prerequisites" "Downloading & Installing k9s..."
           # Getting latest URL robustly
           K9S_DEB_URL=$(curl -fsSL https://api.github.com/repos/derailed/k9s/releases/latest | grep 'browser_download_url.*linux_amd64.deb' | head -n 1 | cut -d '"' -f 4)
-          if [[ -n "<span class="math-inline">K9S\_DEB\_URL" \]\]; then
-\# Create temporary file securely
-K9S\_TMP\_DEB\=</span>(mktemp --suffix=.deb)
+          if [[ -n "$K9S_DEB_URL" ]]; then
+               # Create temporary file securely
+              K9S_TMP_DEB=$(mktemp --suffix=.deb)
               wget -qO "$K9S_TMP_DEB" "$K9S_DEB_URL"
               dpkg -i "$K9S_TMP_DEB"
               rm "$K9S_TMP_DEB" # Clean up downloaded file
@@ -283,15 +290,16 @@ K9S\_TMP\_DEB\=</span>(mktemp --suffix=.deb)
 
       update_motd "3" "Azure Arc Connection" "Connecting cluster to Arc..." "Resource: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "Location: $LOCATION"
       # Using default kubeconfig which root now uses
-      az connectedk8s connect --name "$RESOURCE_NAME" --location "$LOCATION" --resource-group "<span class="math-inline">RESOURCE\_GROUP" \-\-correlation\-id "" \-\-output none
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-\# Step 4 of 8\: Create Storage Account\.
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-\# Generate a unique name for the storage account
-\# Max 24 chars, lowercase alphanumeric
-UNIQUE\_SUFFIX\=</span>(echo "<span class="math-inline">RESOURCE\_NAME" \| sha256sum \| head \-c 10\) \# Use hash for uniqueness
-STORAGE\_ACCOUNT\="st</span>(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)<span class="math-inline">UNIQUE\_SUFFIX"
-STORAGE\_ACCOUNT\=</span>(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | head -c 24)
+      az connectedk8s connect --name "$RESOURCE_NAME" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --correlation-id "" --output none
+
+      # -------------------------
+      # Step 4 of 8: Create Storage Account.
+      # -------------------------
+      # Generate a unique name for the storage account
+      # Max 24 chars, lowercase alphanumeric
+      UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10) # Use hash for uniqueness
+      STORAGE_ACCOUNT="st$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$UNIQUE_SUFFIX"
+      STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | head -c 24)
 
 
       update_motd "4" "Azure Storage Account" "Checking for account: $STORAGE_ACCOUNT"
@@ -300,24 +308,26 @@ STORAGE\_ACCOUNT\=</span>(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' |
           update_motd "4" "Azure Storage Account" "Account $STORAGE_ACCOUNT already exists."
       else
           update_motd "4" "Azure Storage Account" "Creating account: $STORAGE_ACCOUNT..." "RG: $RESOURCE_GROUP" "Location: $LOCATION"
-          az storage account create --name "$STORAGE_ACCOUNT" --location "$LOCATION" --resource-group "<span class="math-inline">RESOURCE\_GROUP"</0\> \-\-enable\-hierarchical\-namespace</1\> true \-\-sku Standard\_RAGRS \-\-kind StorageV2 \-\-output none
-fi
-update\_motd "4" "Azure Storage Account" "Retrieving Resource ID\.\.\."
-SA\_RESOURCE\_ID\=</span>(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+          az storage account create --name "$STORAGE_ACCOUNT" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --enable-hierarchical-namespace true --sku Standard_RAGRS --kind StorageV2 --output none
+      fi
+
+      update_motd "4" "Azure Storage Account" "Retrieving Resource ID..."
+      SA_RESOURCE_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
       if [[ -z "$SA_RESOURCE_ID" ]]; then
-          update_motd "ERROR" "Failed to get Storage Account ID!" "Account: <span class="math-inline">STORAGE\_ACCOUNT"
-exit 1
-fi
-export SA\_RESOURCE\_ID \# Export for subsequent steps if needed directly
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-\# Step 5 of 8\: Create Schema Registry\.
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-\# Generate unique names
-SR\_SUFFIX\_HASH\=</span>(echo "<span class="math-inline">RESOURCE\_NAME" \| sha256sum \| head \-c 10\)
-SCHEMA\_REGISTRY\="sr</span>(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)<span class="math-inline">SR\_SUFFIX\_HASH"
-SCHEMA\_REGISTRY\=</span>(echo "<span class="math-inline">SCHEMA\_REGISTRY" \| tr '\[\:upper\:\]' '\[\:lower\:\]' \| head \-c 24\)
-SCHEMA\_REGISTRY\_NAMESPACE\="srn</span>(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)<span class="math-inline">SR\_SUFFIX\_HASH"
-SCHEMA\_REGISTRY\_NAMESPACE\=</span>(echo "$SCHEMA_REGISTRY_NAMESPACE" | tr '[:upper:]' '[:lower:]' | head -c 24)
+          update_motd "ERROR" "Failed to get Storage Account ID!" "Account: $STORAGE_ACCOUNT"
+          exit 1
+      fi
+      export SA_RESOURCE_ID # Export for subsequent steps if needed directly
+
+      # -------------------------
+      # Step 5 of 8: Create Schema Registry.
+      # -------------------------
+      # Generate unique names
+      SR_SUFFIX_HASH=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10)
+      SCHEMA_REGISTRY="sr$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$SR_SUFFIX_HASH"
+      SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]' | head -c 24)
+      SCHEMA_REGISTRY_NAMESPACE="srn$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$SR_SUFFIX_HASH"
+      SCHEMA_REGISTRY_NAMESPACE=$(echo "$SCHEMA_REGISTRY_NAMESPACE" | tr '[:upper:]' '[:lower:]' | head -c 24)
 
 
       update_motd "5" "Azure Schema Registry" "Checking for registry: $SCHEMA_REGISTRY"
@@ -338,18 +348,19 @@ SCHEMA\_REGISTRY\_NAMESPACE\=</span>(echo "$SCHEMA_REGISTRY_NAMESPACE" | tr '[:u
           # Assuming --no-tls for k3d simplicity, adjust if using KeyVault
           az iot ops init --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --no-tls --no-progress
       else
-          update_motd "6" "Azure IoT Operations Init" "Already initialized." "Cluster: <span class="math-inline">RESOURCE\_NAME"
-fi
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-\# Step 7 of 8\: Create IoT Ops Instance\.
-\# \-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
-update\_motd "7" "Azure IoT Ops Instance" "Retrieving Schema Registry ID\.\.\."
-SR\_RESOURCE\_ID\=</span>(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+          update_motd "6" "Azure IoT Operations Init" "Already initialized." "Cluster: $RESOURCE_NAME"
+      fi
+
+      # -------------------------
+      # Step 7 of 8: Create IoT Ops Instance.
+      # -------------------------
+      update_motd "7" "Azure IoT Ops Instance" "Retrieving Schema Registry ID..."
+      SR_RESOURCE_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
       if [[ -z "$SR_RESOURCE_ID" ]]; then
-        update_motd "ERROR" "Failed to get Schema Registry ID!" "Registry: <span class="math-inline">SCHEMA\_REGISTRY"
-exit 1
-fi
-INSTANCE\_NAME\="</span>{RESOURCE_NAME}-instance"
+        update_motd "ERROR" "Failed to get Schema Registry ID!" "Registry: $SCHEMA_REGISTRY"
+        exit 1
+      fi
+      INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
       update_motd "7" "Azure IoT Ops Instance" "Checking for instance: $INSTANCE_NAME"
       # Check if the Broker resource exists as an indicator
@@ -398,7 +409,6 @@ INSTANCE\_NAME\="</span>{RESOURCE_NAME}-instance"
           "Try: k9s"
 
       echo "Script /root/provision_ops_vm.sh finished successfully."
-
 
 # runcmd executes the script written above by the write_files module
 runcmd:
