@@ -7,103 +7,87 @@ apt:
   preserve_sources_list: true
   sources:
     msft.list:
-      source: 'deb [arch=amd64 signed-by=$KEY_FILE] https://packages.microsoft.com/ubuntu/24.04/prod noble main'
+      source: 'deb [signed-by=$KEY_FILE] https://packages.microsoft.com/ubuntu/24.04/prod noble main'
       keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
     azurecli.list:
-      source: 'deb [arch=amd64 signed-by=$KEY_FILE] https://packages.microsoft.com/repos/azure-cli noble main'
+      source: 'deb [signed-by=$KEY_FILE] https://packages.microsoft.com/repos/azure-cli noble main'
       keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
     kubernetes.list:
-      # Using stable channel for v1.30 as an example, adjust version as needed
-      source: 'deb [arch=amd64 signed-by=$KEY_FILE] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /'
+      source: 'deb [signed-by=$KEY_FILE] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
       keyid: DE15B14486CD377B9E876E1A234654DA9A296436
 
 packages:
   - bash
   - azure-cli
-  - kubectl # Will be installed from the k8s repo added above
+  - kubectl
   - git
-  - moby-cli    # Docker CLI components (community)
-  - moby-engine # Docker Engine (community)
+  - moby-cli
+  - moby-engine
   - wget
   - curl
-  - coreutils   # Provides sha256sum, head, mktemp, etc.
-  - util-linux  # Provides id, etc.
-  - gnupg       # For handling GPG keys used by apt
+  - coreutils
+  - util-linux
+  - gnupg
 
-# Writes files to the instance
 write_files:
-  # 1. Initial MOTD
-  - path: /etc/motd               # Indentation Level 1 (2 spaces)
-    owner: root:root            # Indentation Level 2 (4 spaces)
-    permissions: '0644'         # Indentation Level 2
-    content: |                  # Indentation Level 2
-      +------------------------------------------------------------+ # Indentation Level 3 (6 spaces)
-      |          Azure IoT Operations Dev VM Provisioning          | # Indentation Level 3
-      +------------------------------------------------------------+ # Indentation Level 3
-      | Status: Starting Up...                                     | # Indentation Level 3
-      | Action: Running cloud-init setup script                    | # Indentation Level 3
-      |                                                            | # Indentation Level 3
-      | To monitor progress in real-time (from another terminal):  | # Indentation Level 3
-      | $ watch -n 1 -t cat /etc/motd                              | # Indentation Level 3
-      |                                                            | # Indentation Level 3
-      | Please wait for configuration to complete.                 | # Indentation Level 3
-      +------------------------------------------------------------+ # Indentation Level 3
+  # 1. Initial MOTD (Comments Removed from content)
+  - path: /etc/motd
+    owner: root:root
+    permissions: '0644'
+    content: |
+      +------------------------------------------------------------+
+      |          Azure IoT Operations Dev VM Provisioning          |
+      +------------------------------------------------------------+
+      | Status: Starting Up...                                     |
+      | Action: Running cloud-init setup script                    |
+      |                                                            |
+      | To monitor progress in real-time (from another terminal):  |
+      | $ watch -n 1 -t cat /etc/motd                              |
+      |                                                            |
+      | Please wait for configuration to complete.                 |
+      +------------------------------------------------------------+
 
   # 2. The main provisioning script
-  - path: /root/provision_ops_vm.sh # Indentation Level 1 (2 spaces)
-    owner: root:root            # Indentation Level 2 (4 spaces)
-    permissions: '0700'         # Indentation Level 2
-    # CORRECTED: Ensure all lines below this start at Indentation Level 3 (6 spaces)
-    content: |                  # Indentation Level 2
+  - path: /root/provision_ops_vm.sh
+    owner: root:root
+    permissions: '0700'
+    content: |
       #!/bin/bash
-      # Ensure script runs under bash and handle errors robustly
-      # Exit on error (-e), error on undefined variable (-u), error on pipeline failure (-o pipefail)
       set -euo pipefail
 
       # --- Configuration ---
       TOTAL_STEPS=8
-      MOTD_WIDTH=62 # Total width including borders
+      MOTD_WIDTH=62
 
       # --- Helper Function: update_motd ---
-      # (Function definition remains the same as previous correct version)
       update_motd() {
           local step_num="$1"
           local status_msg="$2"
-          # *** THIS BLOCK HAD THE INDENTATION ERROR ***
-          shift 2 # Remove the first two arguments, remaining are detail lines
-          # Ensure details is treated as an array even if empty
+          shift 2
           local details=("$@")
-          local text_width=$((MOTD_WIDTH - 4)) # Width available for text inside '* ... *'
+          local text_width=$((MOTD_WIDTH - 4))
 
-          # Header
           printf '+%.0s' $(seq 1 $MOTD_WIDTH) > /etc/motd
           echo >> /etc/motd
 
-          # Title/Step Info
           local step_info
           if [[ "$step_num" == "ERROR" || "$step_num" == "SUCCESS" ]]; then
               step_info="$status_msg"
           else
               step_info="Step $step_num of $TOTAL_STEPS: $status_msg"
           fi
-          # Truncate step_info if it's too long
           if [ ${#step_info} -gt $text_width ]; then
-               step_info="$(echo "$step_info" | head -c $((text_width - 3)))..."
+              step_info="$(echo "$step_info" | head -c $((text_width - 3)))..."
           fi
           local padding=$(( (text_width - ${#step_info}) / 2 ))
           local remainder=$(( (text_width - ${#step_info}) % 2 ))
           printf '| %*s%s%*s |\n' $padding "" "$step_info" $((padding + remainder)) "" >> /etc/motd
 
-          # Separator (optional, if details exist)
           if [ ${#details[@]} -gt 0 ]; then
                printf '|%.0s' $(seq 1 $((MOTD_WIDTH-2))) >> /etc/motd
                echo '|' >> /etc/motd
           fi
-
-          # Detail Lines
-          # Loop gracefully handles empty details array
           for detail in "${details[@]}"; do
-              # Truncate long details to fit
               local truncated_detail="$detail"
               if [ ${#truncated_detail} -gt $text_width ]; then
                   truncated_detail="$(echo "$truncated_detail" | head -c $((text_width - 3)))..."
@@ -113,40 +97,27 @@ write_files:
               printf '| %*s%s%*s |\n' $detail_padding "" "$truncated_detail" $((detail_padding + detail_remainder)) "" >> /etc/motd
           done
 
-          # Empty line for spacing before footer if details were printed
            if [ ${#details[@]} -gt 0 ]; then
                printf '|%*s|\n' $((MOTD_WIDTH-2)) "" >> /etc/motd
            fi
 
-          # Footer
           printf '+%.0s' $(seq 1 $MOTD_WIDTH) >> /etc/motd
           echo >> /etc/motd
       }
 
-      # --- Error Handling Function ---
+      # --- Error Handling Function (Simplified) ---
       handle_error() {
           local exit_code=$?
-          # BASH_LINENO is an array. [0] is the line number where the error occurred.
           local line_no=${BASH_LINENO[0]:-unknown}
-          # BASH_COMMAND contains the command that failed.
-          local command="${BASH_COMMAND:-unknown}"
 
-          # Escape double quotes in the command before passing to update_motd
-          local safe_command_hint=$(echo "$command" | sed 's/"/\\"/g')
-          # Further sanitize for control characters just in case
-          safe_command_hint=$(echo "$safe_command_hint" | tr -dc '[:print:]\t') # Allow printables and tab
-
-          # Update MOTD with error details using the helper function
           update_motd "ERROR" "PROVISIONING FAILED!" \
               "Script: /root/provision_ops_vm.sh" \
               "Error on or near line: ${line_no}" \
               "Exit Code: ${exit_code}" \
-              "Failed Command Hint: ${safe_command_hint}" \
-              "Check cloud-init logs:" \
+              "Check cloud-init logs for details:" \
               "/var/log/cloud-init.log" \
               "/var/log/cloud-init-output.log"
 
-          # Exit with the original error code
           exit $exit_code
       }
 
@@ -154,34 +125,23 @@ write_files:
       trap handle_error ERR
 
       # --- Start Provisioning Steps ---
-
       update_motd "..." "Initializing Variables & Environment"
-
-      # Set environment variables used in later steps.
-      # Make sure these are exported if needed by sub-processes like az commands
       export MYUSER=$(id -un 1000)
       export MYHOME=$(eval echo ~$MYUSER)
       export MYWORK="/workspaces"
       export LOCATION="${LOCATION:-{{{location}}}"
-      export RESOURCE_GROUP="${RESOURCE_GROUP:-{{{resource_group}}}}"
-      export RESOURCE_NAME="${RESOURCE_NAME:-{{{resource_name}}}}"
+      export RESOURCE_GROUP="${RESOURCE_GROUP:-{{{resource_group}}}"
+      export RESOURCE_NAME="${RESOURCE_NAME:-{{{resource_name}}}"
 
-      # Validate required variables are set
       if [[ "$LOCATION" == "{{{location}}}" || "$RESOURCE_GROUP" == "{{{resource_group}}}" || "$RESOURCE_NAME" == "{{{resource_name}}}" ]]; then
-          update_motd "ERROR" "Missing Required Variables!" \
-              "LOCATION, RESOURCE_GROUP, or RESOURCE_NAME was not provided." \
-              "Check cloud-init user-data."
+          update_motd "ERROR" "Missing Required Variables!" "Check cloud-init user-data."
           exit 1
       fi
 
-
       # -------------------------
       # Step 1 of 8: Install prerequisites.
-      # (Rest of the steps remain the same as the previous correct version)
-      # ... (Ensure all steps 1-8 are present here as before, correctly indented) ...
       # -------------------------
       update_motd "1" "Installing prerequisites" "Checking package tools..."
-
       SYSTEM_NAME=$(uname -r)
 
       if ! command -v k3d &> /dev/null; then
@@ -194,7 +154,6 @@ write_files:
 
       if ! command -v helm &> /dev/null; then
           update_motd "1" "Installing prerequisites" "Downloading & Installing Helm..."
-          # Use curl -fsSL for better error checking in pipelines
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
       else
            update_motd "1" "Installing prerequisites" "Helm already installed."
@@ -212,33 +171,27 @@ write_files:
           update_motd "1" "Installing prerequisites" "Step CLI already installed."
       fi
 
-      # Check Azure CLI (already installed via packages, but confirm `az` command)
       update_motd "1" "Installing prerequisites" "Verifying Azure CLI..."
       if ! command -v az &> /dev/null; then
-         update_motd "ERROR" "Azure CLI Installation Failed!" "az command not found after package install."
-         exit 1
+          update_motd "ERROR" "Azure CLI Installation Failed!" "az command not found after package install."
+          exit 1
       fi
+
       update_motd "1" "Installing prerequisites" "Installing AKS CLI components..."
-      # Run this even if az is present, might need updates/specific versions
       az aks install-cli --kubelogin-version 0.1.3 --aks-preview-cli-version 0.6.5 || echo "Warning: aks install-cli command finished with non-zero exit code."
 
-
       update_motd "1" "Installing prerequisites" "Adding/Updating Azure CLI extensions..."
-      # Allow extension add to fail sometimes, just print warning
       az extension add --upgrade --name azure-iot-ops &> /dev/null || echo "Warning: Failed to add or upgrade 'azure-iot-ops' extension."
       az extension add --upgrade --name connectedk8s &> /dev/null || echo "Warning: Failed to add or upgrade 'connectedk8s' extension."
 
-
       if ! command -v k9s &> /dev/null; then
           update_motd "1" "Installing prerequisites" "Downloading & Installing k9s..."
-          # Getting latest URL robustly
           K9S_DEB_URL=$(curl -fsSL https://api.github.com/repos/derailed/k9s/releases/latest | grep 'browser_download_url.*linux_amd64.deb' | head -n 1 | cut -d '"' -f 4)
           if [[ -n "$K9S_DEB_URL" ]]; then
-               # Create temporary file securely
               K9S_TMP_DEB=$(mktemp --suffix=.deb)
               wget -qO "$K9S_TMP_DEB" "$K9S_DEB_URL"
               dpkg -i "$K9S_TMP_DEB"
-              rm "$K9S_TMP_DEB" # Clean up downloaded file
+              rm "$K9S_TMP_DEB"
           else
               update_motd "1" "Installing prerequisites" "Warning: Could not determine k9s latest deb URL. Skipping."
           fi
@@ -250,10 +203,9 @@ write_files:
       # Step 2 of 8: Create k3d cluster.
       # -------------------------
       update_motd "2" "Creating k3d cluster" "Checking existing k3d cluster..."
-      # If cluster exists and is running, maybe skip? For simplicity, we recreate.
       if k3d cluster list | grep -q '^k3s-default'; then
           update_motd "2" "Creating k3d cluster" "Deleting existing k3s-default cluster..."
-          k3d cluster delete k3s-default || true # Allow failure if deletion has issues but continue
+          k3d cluster delete k3s-default || true
       fi
 
 
@@ -267,17 +219,13 @@ write_files:
 
       update_motd "2" "Creating k3d cluster" "Configuring kubectl context..."
       mkdir -p "$MYHOME/.kube"
-      # Let k3d merge into the default config directly
       k3d kubeconfig merge k3s-default --kubeconfig-merge-default
-      # Ensure user owns their config
       chown "$MYUSER:$MYUSER" "$MYHOME/.kube"
       chown "$MYUSER:$MYUSER" "$MYHOME/.kube/config"
       chmod 600 "$MYHOME/.kube/config"
 
-      # Set context for root user running the script and the target user
       kubectl config use-context k3d-k3s-default
       kubectl config set-context --current --namespace=azure-iot-operations
-      # Ensure user context is also set (run as the user)
       sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config use-context k3d-k3s-default
       sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config set-context --current --namespace=azure-iot-operations
 
@@ -286,24 +234,20 @@ write_files:
       # Step 3 of 8: Arc-enable the Kubernetes cluster.
       # -------------------------
       update_motd "3" "Azure Arc Connection" "Logging into Azure (Managed Identity)..."
-      az login --identity --output none # Suppress login output
+      az login --identity --output none
 
       update_motd "3" "Azure Arc Connection" "Connecting cluster to Arc..." "Resource: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "Location: $LOCATION"
-      # Using default kubeconfig which root now uses
       az connectedk8s connect --name "$RESOURCE_NAME" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --correlation-id "" --output none
 
       # -------------------------
       # Step 4 of 8: Create Storage Account.
       # -------------------------
-      # Generate a unique name for the storage account
-      # Max 24 chars, lowercase alphanumeric
-      UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10) # Use hash for uniqueness
+      UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10)
       STORAGE_ACCOUNT="st$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$UNIQUE_SUFFIX"
       STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | head -c 24)
 
 
       update_motd "4" "Azure Storage Account" "Checking for account: $STORAGE_ACCOUNT"
-      # Check existence using 'az storage account show' and check exit code
       if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none &> /dev/null; then
           update_motd "4" "Azure Storage Account" "Account $STORAGE_ACCOUNT already exists."
       else
@@ -317,12 +261,11 @@ write_files:
           update_motd "ERROR" "Failed to get Storage Account ID!" "Account: $STORAGE_ACCOUNT"
           exit 1
       fi
-      export SA_RESOURCE_ID # Export for subsequent steps if needed directly
+      export SA_RESOURCE_ID
 
       # -------------------------
       # Step 5 of 8: Create Schema Registry.
       # -------------------------
-      # Generate unique names
       SR_SUFFIX_HASH=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10)
       SCHEMA_REGISTRY="sr$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$SR_SUFFIX_HASH"
       SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]' | head -c 24)
@@ -342,10 +285,8 @@ write_files:
       # Step 6 of 8: Initialize IoT Operations.
       # -------------------------
       update_motd "6" "Azure IoT Operations Init" "Checking initialization status..." "Cluster: $RESOURCE_NAME"
-      # Check if key CRDs or namespace resources exist
       if ! kubectl get ns azure-iot-operations &> /dev/null || ! kubectl get deployment mq-operator -n azure-iot-operations &> /dev/null; then
           update_motd "6" "Azure IoT Operations Init" "Running az iot ops init..." "Cluster: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "(Using --no-tls for k3d)"
-          # Assuming --no-tls for k3d simplicity, adjust if using KeyVault
           az iot ops init --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --no-tls --no-progress
       else
           update_motd "6" "Azure IoT Operations Init" "Already initialized." "Cluster: $RESOURCE_NAME"
@@ -363,7 +304,6 @@ write_files:
       INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
       update_motd "7" "Azure IoT Ops Instance" "Checking for instance: $INSTANCE_NAME"
-      # Check if the Broker resource exists as an indicator
       if ! kubectl get broker "$INSTANCE_NAME" -n azure-iot-operations &> /dev/null; then
           update_motd "7" "Azure IoT Ops Instance" "Creating instance: $INSTANCE_NAME..." "Cluster: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "(Low profile, RF=1)"
           az iot ops instance create \
@@ -387,7 +327,6 @@ write_files:
       # Step 8 of 8: Configure kube config and Finalize.
       # -------------------------
       update_motd "8" "Finalizing Setup" "Ensuring kubeconfig permissions..." "User: $MYUSER"
-      # Re-apply ownership/permissions just in case
       chown "$MYUSER:$MYUSER" "$MYHOME/.kube/config"
       chmod 600 "$MYHOME/.kube/config"
 
@@ -399,7 +338,6 @@ write_files:
       # -------------------------
       # Final Success Message
       # -------------------------
-      # Disable the error trap cleanly before final MOTD update
       trap - ERR
 
       update_motd "SUCCESS" "PROVISIONING COMPLETE!" \
@@ -410,6 +348,6 @@ write_files:
 
       echo "Script /root/provision_ops_vm.sh finished successfully."
 
-# runcmd executes the script written above by the write_files module
+
 runcmd:
   - /root/provision_ops_vm.sh
