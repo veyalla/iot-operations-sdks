@@ -30,7 +30,7 @@ write_files:
     content: |
       ******************************************************
       *       Provisioning Started - Please Wait           *
-      *    System configuration is underway              *
+      *    System configuration is underway                *
       ******************************************************
 
 runcmd:
@@ -47,7 +47,7 @@ runcmd:
   # ============================================================
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 1: Installing prerequisites                *" >> /etc/motd
+    echo "*  Step 1: Installing prerequisites                  *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
     # Install docker if not on WSL and docker is missing.
@@ -96,8 +96,8 @@ runcmd:
   # ============================================================
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 2: Creating k3d cluster                    *" >> /etc/motd
-    echo "*  (Setting forwarded ports and registry)          *" >> /etc/motd
+    echo "*  Step 2: Creating k3d cluster                      *" >> /etc/motd
+    echo "*  (Setting forwarded ports and registry)            *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
     # Delete any existing k3d cluster (ignore errors if none exist).
@@ -114,14 +114,14 @@ runcmd:
     # Set the default kubectl context to use the 'azure-iot-operations' namespace.
     kubectl config set-context k3d-k3s-default --namespace=azure-iot-operations
 
-    k3d kubeconfig get -a | sudo tee ~/.kube/config > /dev/null
+    sudo mkdir -p ~/.kube && sudo k3d kubeconfig get -a | sudo tee ~/.kube/config > /dev/null
 
   # ============================================================
   # Step 3: Arc-enable the Kubernetes cluster.
   # ============================================================
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 3: Arc-enabling Kubernetes cluster...       *" >> /etc/motd
+    echo "*  Step 3: Arc-enabling Kubernetes cluster...        *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
     # Log in using the managed identity.
