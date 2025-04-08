@@ -42,15 +42,15 @@ runcmd:
   - RESOURCE_GROUP={{{resource_group}}}
   - RESOURCE_NAME={{{resource_name}}}
 
-  # ============================================================
-  # Step 1: Install prerequisites.
-  # ============================================================
+  # -------------------------
+  # Step 1 of 8: Install prerequisites.
+  # -------------------------
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 1: Installing prerequisites                *" >> /etc/motd
+    echo "*  Step 1 of 8: Installing prerequisites             *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
-    # Install docker if not on WSL (or if missing)
+    # Install docker if not on WSL (or if missing).
     SYSTEM_NAME=$(uname -r)
     if [[ "$SYSTEM_NAME" != *"microsoft"* || "$SYSTEM_NAME" != *"WSL"* ]]; then
       if ! which docker > /dev/null 2>&1; then
@@ -81,7 +81,7 @@ runcmd:
       az aks install-cli
     fi
 
-    # Install/upgrade Azure IoT and ConnectedK8s extensions.
+    # Install/upgrade extensions.
     az extension add --upgrade --name azure-iot-ops
     az extension add --upgrade --name connectedk8s
 
@@ -91,19 +91,19 @@ runcmd:
       sudo dpkg -i /tmp/k9s_linux_amd64.deb
     fi
 
-  # ============================================================
-  # Step 2: Create k3d cluster.
-  # ============================================================
+  # -------------------------
+  # Step 2 of 8: Create k3d cluster.
+  # -------------------------
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 2: Creating k3d cluster                    *" >> /etc/motd
+    echo "*  Step 2 of 8: Creating k3d cluster                *" >> /etc/motd
     echo "*  (Setting forwarded ports and registry)          *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
     # Delete any existing k3d cluster (ignore errors if none exist).
     k3d cluster delete || true
 
-    # Create a new k3d cluster with port forwarding (e.g., MQTT/MQTTS) and a local registry.
+    # Create a new k3d cluster with port forwarding and a local registry.
     k3d cluster create \
       -p '1883:1883@loadbalancer' \
       -p '8883:8883@loadbalancer' \
@@ -111,46 +111,39 @@ runcmd:
       --registry-create k3d-registry.localhost:127.0.0.1:5000 \
       --wait
 
-    # Set default kubectl context to use the 'azure-iot-operations' namespace.
+    # Set default Kubernetes context to use the 'azure-iot-operations' namespace.
     kubectl config set-context k3d-k3s-default --namespace=azure-iot-operations
 
-  # ============================================================
-  # Step 3: Arc-enable the Kubernetes cluster.
-  # ============================================================
+  # -------------------------
+  # Step 3 of 8: Arc-enable the Kubernetes cluster.
+  # -------------------------
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 3: Arc-enabling Kubernetes cluster...       *" >> /etc/motd
+    echo "*  Step 3 of 8: Arc-enabling Kubernetes cluster...   *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
-    # Connect the Kubernetes cluster via Azure Arc (managed identity is already in use).
+    # Since managed identity is used, this runs without prompting.
+    az login --identity
     az connectedk8s connect --name $RESOURCE_NAME --location $LOCATION --resource-group $RESOURCE_GROUP --kube-config .kube/config
 
-  # ============================================================
-  # Step 4A: IoT Operations Setup - Derive resource names and create storage/schema registry.
-  # ============================================================
+  # -------------------------
+  # Step 4 of 8: Create Storage Account.
+  # -------------------------
   - |
-    echo "******************************************************" > /etc/motd
-    echo "*  Step 4A: Deriving unique resource names           *" >> /etc/motd
-    echo "*  Using RESOURCE_NAME: $RESOURCE_NAME                *" >> /etc/motd
-    echo "*  RESOURCE_GROUP: $RESOURCE_GROUP, LOCATION: $LOCATION *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-18)
-    STORAGE_ACCOUNT="st${UNIQUE_SUFFIX}"
+    # Derive resource names.
+    STORAGE_ACCOUNT="st$(echo $RESOURCE_NAME | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-18)"
     STORAGE_ACCOUNT=${STORAGE_ACCOUNT:0:24}
-    SCHEMA_REGISTRY="sr${UNIQUE_SUFFIX}"
-    SCHEMA_REGISTRY_NAMESPACE="srn${UNIQUE_SUFFIX}"
 
-    echo "Unique suffix: $UNIQUE_SUFFIX"
-    echo "Storage Account: $STORAGE_ACCOUNT"
-    echo "Schema Registry: $SCHEMA_REGISTRY"
-    echo "Schema Registry Namespace: $SCHEMA_REGISTRY_NAMESPACE"
+    echo "******************************************************" > /etc/motd
+    echo "*  Step 4 of 8: Creating Storage Account             *" >> /etc/motd
+    echo "*  Resource Details:                                 *" >> /etc/motd
+    echo "*    Storage Account: $STORAGE_ACCOUNT               *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
 
     # Create storage account if it doesn't exist.
     az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" &> /dev/null
     if [ $? -ne 0 ]; then
-      echo "Creating storage account:"
-      echo "az storage account create --name \"$STORAGE_ACCOUNT\" --location \"$LOCATION\" --resource-group \"$RESOURCE_GROUP\" --enable-hierarchical-namespace true --sku Standard_RAGRS --kind StorageV2"
+      echo "Creating storage account $STORAGE_ACCOUNT..."
       az storage account create --name "$STORAGE_ACCOUNT" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --enable-hierarchical-namespace true --sku Standard_RAGRS --kind StorageV2 --output none
     else
       echo "Storage account $STORAGE_ACCOUNT already exists."
@@ -158,26 +151,39 @@ runcmd:
 
     SA_RESOURCE_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
 
+  # -------------------------
+  # Step 5 of 8: Create Schema Registry.
+  # -------------------------
+  - |
+    # Derive schema registry names.
+    SCHEMA_REGISTRY="sr$(echo $RESOURCE_NAME | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-18)"
+    SCHEMA_REGISTRY_NAMESPACE="srn$(echo $RESOURCE_NAME | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-18)"
+
+    echo "******************************************************" > /etc/motd
+    echo "*  Step 5 of 8: Creating Schema Registry             *" >> /etc/motd
+    echo "*  Resource Details:                                 *" >> /etc/motd
+    echo "*    Schema Registry: $SCHEMA_REGISTRY               *" >> /etc/motd
+    echo "*    Registry Namespace: $SCHEMA_REGISTRY_NAMESPACE  *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
+
     # Create schema registry if it doesn't exist.
     az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" &> /dev/null
     if [ $? -ne 0 ]; then
-      echo "Creating schema registry:"
-      echo "az iot ops schema registry create --name \"$SCHEMA_REGISTRY\" --resource-group \"$RESOURCE_GROUP\" --registry-namespace \"$SCHEMA_REGISTRY_NAMESPACE\" --sa-resource-id \"$SA_RESOURCE_ID\""
+      echo "Creating schema registry $SCHEMA_REGISTRY..."
       az iot ops schema registry create --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --registry-namespace "$SCHEMA_REGISTRY_NAMESPACE" --sa-resource-id "$SA_RESOURCE_ID" --output none
     else
       echo "Schema registry $SCHEMA_REGISTRY already exists."
     fi
 
-  # ============================================================
-  # Step 4B: IoT Ops Init.
-  # ============================================================
+  # -------------------------
+  # Step 6 of 8: Initialize IoT Operations.
+  # -------------------------
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 4B: IoT Ops Init                           *" >> /etc/motd
+    echo "*  Step 6 of 8: Initializing IoT Operations          *" >> /etc/motd
     echo "*  Running: az iot ops init --cluster \"$RESOURCE_NAME\" --resource-group \"$RESOURCE_GROUP\"  *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
-    # Check if IoT Ops is already initialized; if not, run the init command.
     az iot ops show --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null
     if [ $? -ne 0 ]; then
       az iot ops init --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP"
@@ -185,55 +191,42 @@ runcmd:
       echo "IoT Operations already initialized on cluster $RESOURCE_NAME."
     fi
 
-  # ============================================================
-  # Step 4C: IoT Ops Create.
-  # ============================================================
+  # -------------------------
+  # Step 7 of 8: Create IoT Operations instance.
+  # -------------------------
   - |
     SR_RESOURCE_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
     INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
     echo "******************************************************" > /etc/motd
-    echo "*  Step 4C: IoT Ops Create                         *" >> /etc/motd
-    echo "*  Running: az iot ops create --cluster \"$RESOURCE_NAME\" --resource-group \"$RESOURCE_GROUP\" --name \"$INSTANCE_NAME\" --sr-resource-id \"$SR_RESOURCE_ID\" --broker-frontend-replicas 1 --broker-frontend-workers 1 --broker-backend-part 1 --broker-backend-workers 1 --broker-backend-rf 2 --broker-mem-profile Low  *" >> /etc/motd
+    echo "*  Step 7 of 8: Creating IoT Operations instance       *" >> /etc/motd
+    echo "*  Running: az iot ops create --cluster \"$RESOURCE_NAME\" " >> /etc/motd
+    echo "*           --resource-group \"$RESOURCE_GROUP\"         *" >> /etc/motd
+    echo "*           --name \"$INSTANCE_NAME\"                      *" >> /etc/motd
+    echo "*           --sr-resource-id \"$SR_RESOURCE_ID\"           *" >> /etc/motd
+    echo "*           --broker-frontend-replicas 1                 *" >> /etc/motd
+    echo "*           --broker-frontend-workers 1                  *" >> /etc/motd
+    echo "*           --broker-backend-part 1                     *" >> /etc/motd
+    echo "*           --broker-backend-workers 1                  *" >> /etc/motd
+    echo "*           --broker-backend-rf 2                       *" >> /etc/motd
+    echo "*           --broker-mem-profile Low                    *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
-    # Check if the IoT Ops instance already exists; if not, create it.
     az iot ops show --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --name "$INSTANCE_NAME" &> /dev/null
     if [ $? -ne 0 ]; then
-      az iot ops create \
-        --cluster "$RESOURCE_NAME" \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$INSTANCE_NAME" \
-        --sr-resource-id "$SR_RESOURCE_ID" \
-        --broker-frontend-replicas 1 \
-        --broker-frontend-workers 1 \
-        --broker-backend-part 1 \
-        --broker-backend-workers 1 \
-        --broker-backend-rf 2 \
-        --broker-mem-profile Low \
-        --output none
+      az iot ops create --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --name "$INSTANCE_NAME" --sr-resource-id "$SR_RESOURCE_ID" --broker-frontend-replicas 1 --broker-frontend-workers 1 --broker-backend-part 1 --broker-backend-workers 1 --broker-backend-rf 2 --broker-mem-profile Low --output none
     else
       echo "IoT Ops instance $INSTANCE_NAME already exists."
     fi
 
-  # ============================================================
-  # Step 5: Configure kube config for the default user.
-  # ============================================================
+  # -------------------------
+  # Step 8 of 8: Configure kube config and finalize provisioning.
+  # -------------------------
   - |
     echo "******************************************************" > /etc/motd
-    echo "*  Step 5: Configuring kube config for user         *" >> /etc/motd
-    echo "*  Finalizing provisioning...                        *" >> /etc/motd
+    echo "*  Step 8 of 8: Configuring kube config and Finalizing *" >> /etc/motd
+    echo "*  Provisioning complete.                           *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
 
     install -D -o $MYUSER -g $MYUSER -m 600 $MYWORK/.kube/config $MYHOME/.kube/config
     chown -R $MYUSER:$MYUSER $MYWORK
-
-  # ============================================================
-  # Step 6: Finalize provisioning.
-  # ============================================================
-  - |
-    echo "******************************************************" > /etc/motd
-    echo "*          Provisioning Complete - VM is Ready       *" >> /etc/motd
-    echo "*   To allow non-root access, run the following:     *" >> /etc/motd
-    echo "*   mkdir ~/.kube; sudo install -o \$USER -g \$USER -m 600 /root/.kube/config ~/.kube/config   *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
