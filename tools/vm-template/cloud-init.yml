@@ -408,16 +408,14 @@ write_files:
       ##### Step 11: Initialize IoT Operations #####
       update_status "11" "Initializing IoT Operations" \
         "Command: az iot ops init" \
-        "Cluster: $RESOURCE_NAME" \
+        "Cluster       : $RESOURCE_NAME" \
         "Resource Group: $RESOURCE_GROUP" \
-        "Using --no-tls for local dev environment" \
         "This may take up to 10 minutes..." \
         "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
       az iot ops init \
         --cluster "$RESOURCE_NAME" \
-        --resource-group "$RESOURCE_GROUP" \
-        --no-tls || {
+        --resource-group "$RESOURCE_GROUP" || {
           echo "ERROR: Failed to initialize IoT Operations"
           final_status "FAILED" "Failed to initialize IoT Operations" \
             "Check the log for details: $LOG_FILE" \
