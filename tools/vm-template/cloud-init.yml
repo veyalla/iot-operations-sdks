@@ -448,8 +448,7 @@ write_files:
     content: |
       [Unit]
       Description=Azure IoT Operations Provisioning
-      After=network-online.target cloud-final.service
-      Wants=network-online.target
+      After=network-online.target
 
       [Service]
       Type=simple
