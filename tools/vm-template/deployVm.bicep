@@ -1,8 +1,8 @@
-@description('A Unique name used for the Virtual Machine domain and also for generating resource names.')
-param name string = ''
+@description('A Unique name used for the Virtual Machine domain and also for generating resource names. Defaults to a value prefixed with "aiovm-".')
+param name string = 'aiovm-${uniqueString(resourceGroup().id)}'
 
 @description('Username for the Virtual Machine.')
-param adminUsername string = ''
+param adminUsername string = 'azureuser'
 
 @description('Type of authentication to use on the Virtual Machine. SSH key is recommended.')
 @allowed([
@@ -19,10 +19,10 @@ param adminPasswordOrKey string
 param vmSize string = 'Standard_E2a_v4'
 
 var ubuntuOSVersion = {
-    publisher: 'Canonical'
-    offer: 'ubuntu-24_04-lts'
-    sku: 'server'
-    version: 'latest'
+  publisher: 'Canonical'
+  offer: 'ubuntu-24_04-lts'
+  sku: 'server'
+  version: 'latest'
 }
 var location = resourceGroup().location
 var dnsLabelPrefix = toLower('${name}-${uniqueString(resourceGroup().id)}')
@@ -175,7 +175,6 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   }
 }
 
-// Give the VM Contributor access to the group has it can create the Arc resource
 resource contributorRoleDefinition 'Microsoft.Authorization/roleDefinitions@2022-04-01' existing = {
   scope: subscription()
   name: 'b24988ac-6180-42a0-ab88-20f7382dd24c'
@@ -183,7 +182,6 @@ resource contributorRoleDefinition 'Microsoft.Authorization/roleDefinitions@2022
 
 resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: resourceGroup()
-  // ISSUE: I dont think the vm.id is unique?
   name: guid(resourceGroup().id, vm.id, contributorRoleDefinition.id)
   properties: {
     roleDefinitionId: contributorRoleDefinition.id
@@ -192,7 +190,6 @@ resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-// Shutdown the VM at 1am to save costs
 resource vmShutdown 'Microsoft.DevTestLab/schedules@2018-09-15' = {
   name: 'shutdown-computevm-${vm.name}'
   location: location
@@ -204,7 +201,7 @@ resource vmShutdown 'Microsoft.DevTestLab/schedules@2018-09-15' = {
     dailyRecurrence: {
       time: '0100'
     }
-  }  
+  }
 }
 
 output adminUsername string = adminUsername

@@ -6,9 +6,6 @@ az bicep build -f deployVm.bicep
 
 ## Deploy the template
 
-1. Go [here](https://portal.azure.com/#create/Microsoft.Template)
-
-1. Select "Build your own template in the editor"
-
-1. Paste in the contents of deployVm.json
-
+<a target="_blank" href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FyourUser%2FyourRepo%2Fmain%2Ftools%2Fvm-template%2FdeployVm.json">
+  <img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure" />
+</a>

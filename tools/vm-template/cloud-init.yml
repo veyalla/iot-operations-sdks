@@ -2,6 +2,7 @@
 
 package_update: true
 package_upgrade: true
+
 apt:
   preserve_sources_list: true
   sources:
@@ -22,20 +23,129 @@ packages:
   - moby-cli
   - moby-engine
 
+write_files:
+  - path: /etc/motd
+    owner: root:root
+    permissions: '0644'
+    content: |
+      ******************************************************
+      *       Provisioning Started - Please Wait           *
+      *    System configuration is underway              *
+      ******************************************************
+
 runcmd:
+  # Set environment variables for later use.
   - MYUSER=`id -un 1000`
   - MYHOME=`eval echo ~$MYUSER`
   - MYWORK=/workspaces
   - LOCATION={{{location}}}
   - RESOURCE_GROUP={{{resource_group}}}
   - RESOURCE_NAME={{{resource_name}}}
+
+  # ============================================================
+  # Step 1: Install prerequisites.
+  # ============================================================
   - |
-    mkdir $MYWORK
-    cd $MYWORK
-    git clone https://github.com/azure/iot-operations-sdks
-    ./iot-operations-sdks/tools/deployment/initialize-cluster.sh
+    echo "******************************************************" > /etc/motd
+    echo "*  Step 1: Installing prerequisites                *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
+
+    # Install docker if not on WSL and docker is missing.
+    SYSTEM_NAME=$(uname -r)
+    if [[ "$SYSTEM_NAME" != *"microsoft"* || "$SYSTEM_NAME" != *"WSL"* ]]; then
+      if ! which docker > /dev/null 2>&1; then
+        sudo apt-get update
+        sudo apt-get install -y docker.io
+      fi
+    fi
+
+    # Install k3d if not present.
+    if ! which k3d > /dev/null 2>&1; then
+      wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+    fi
+
+    # Install helm if not present.
+    if ! which helm > /dev/null 2>&1; then
+      curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    fi
+
+    # Install step CLI if not present.
+    if ! which step > /dev/null 2>&1; then
+      wget -q https://github.com/smallstep/cli/releases/download/v0.28.0/step-cli_amd64.deb -P /tmp
+      sudo dpkg -i /tmp/step-cli_amd64.deb
+    fi
+
+    # Install az CLI if not present; then install the AKS CLI.
+    if ! which az > /dev/null 2>&1; then
+      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      az aks install-cli
+    fi
+
+    # Install/upgrade Azure IoT and ConnectedK8s extensions.
+    az extension add --upgrade --name azure-iot-ops
+    az extension add --upgrade --name connectedk8s
+
+    # Install k9s if not present.
+    if ! which k9s > /dev/null 2>&1; then
+      wget -q https://github.com/derailed/k9s/releases/latest/download/k9s_linux_amd64.deb -P /tmp
+      sudo dpkg -i /tmp/k9s_linux_amd64.deb
+    fi
+
+  # ============================================================
+  # Step 2: Create k3d cluster.
+  # ============================================================
+  - |
+    echo "******************************************************" > /etc/motd
+    echo "*  Step 2: Creating k3d cluster                    *" >> /etc/motd
+    echo "*  (Setting forwarded ports and registry)          *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
+
+    # Delete any existing k3d cluster (ignore errors if none exist).
+    k3d cluster delete || true
+
+    # Create a new k3d cluster with port forwarding for MQTT/MQTTS and a local registry.
+    k3d cluster create \
+      -p '1883:1883@loadbalancer' \
+      -p '8883:8883@loadbalancer' \
+      -p '8884:8884@loadbalancer' \
+      --registry-create k3d-registry.localhost:127.0.0.1:5000 \
+      --wait
+
+    # Set the default kubectl context to use the 'azure-iot-operations' namespace.
+    kubectl config set-context k3d-k3s-default --namespace=azure-iot-operations
+
+  # ============================================================
+  # Step 3: Arc-enable the Kubernetes cluster.
+  # ============================================================
+  - |
+    echo "******************************************************" > /etc/motd
+    echo "*  Step 3: Arc-enabling Kubernetes cluster...       *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
+
+    # Log in using the managed identity.
     az login --identity
+
+    # Connect the Kubernetes cluster with Azure Arc.
     az connectedk8s connect --name $RESOURCE_NAME --location $LOCATION --resource-group $RESOURCE_GROUP --kube-config .kube/config
+
+  # ============================================================
+  # Step 4: Configure kube config for the default user.
+  # ============================================================
   - |
+    echo "******************************************************" > /etc/motd
+    echo "*  Step 4: Configuring kube config for user         *" >> /etc/motd
+    echo "*  Finalizing provisioning...                        *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
+
     install -D -o $MYUSER -g $MYUSER -m 600 $MYWORK/.kube/config $MYHOME/.kube/config
     chown -R $MYUSER:$MYUSER $MYWORK
+
+  # ============================================================
+  # Final Step: Provisioning complete.
+  # ============================================================
+  - |
+    echo "******************************************************" > /etc/motd
+    echo "*          Provisioning Complete - VM is Ready       *" >> /etc/motd
+    echo "*   To allow non-root access, run the following:     *" >> /etc/motd
+    echo "*   mkdir ~/.kube; sudo install -o \$USER -g \$USER -m 600 /root/.kube/config ~/.kube/config   *" >> /etc/motd
+    echo "******************************************************" >> /etc/motd
