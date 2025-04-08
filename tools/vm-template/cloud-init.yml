@@ -14,9 +14,12 @@ write_files:
       |                                                            |
       | If setup doesn't start automatically:                      |
       | $ sudo bash /root/provision_ops_vm.sh                      |
+      |                                                            |
+      | To watch progress in real-time:                            |
+      | $ watch cat /etc/motd                                      |
       +------------------------------------------------------------+
 
-  # 2. Improved provisioning script with proper checks and waits
+  # 2. Improved provisioning script with non-interactive GPG handling
   - path: /root/provision_ops_vm.sh
     owner: root:root
     permissions: '0700'
@@ -25,6 +28,9 @@ write_files:
 
       # Enable error handling
       set -e
+
+      # Set non-interactive mode for apt
+      export DEBIAN_FRONTEND=noninteractive
 
       # Set up logging
       LOG_FILE="/var/log/aio-provision.log"
@@ -58,6 +64,8 @@ write_files:
           echo "|"
           echo "| Time: $(date)"
           echo "| Log: $LOG_FILE"
+          echo "|"
+          echo "| To watch progress in real-time: $ watch cat /etc/motd"
           echo "+------------------------------------------------------------+"
         } > /etc/motd
       }
@@ -88,88 +96,68 @@ write_files:
         } > /etc/motd
       }
 
-      # Function to wait for APT locks to be released
-      wait_for_apt() {
-        local i=0
-        while fuser /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
-          if [ $i -ge 60 ]; then
-            echo "Timed out waiting for apt locks after 5 minutes"
-            return 1
-          fi
-          echo "Waiting for apt locks to be released... ($i/60)"
-          sleep 5
-          i=$((i+1))
-        done
-      }
-
-      # Function to ensure a command succeeded
-      ensure_success() {
-        local cmd="$1"
-        local error_msg="$2"
-        local max_retries="${3:-3}"
-        local retry_count=0
-
-        until $cmd; do
-          retry_count=$((retry_count+1))
-          if [ $retry_count -ge $max_retries ]; then
-            echo "ERROR: $error_msg (failed after $max_retries attempts)"
-            final_status "FAILED" "Setup failed" \
-              "$error_msg" \
-              "Check log for details: $LOG_FILE" \
-              "You can try running the script manually:" \
-              "$ sudo bash /root/provision_ops_vm.sh"
-            exit 1
-          fi
-          echo "Command failed, retrying in 10 seconds ($retry_count/$max_retries)..."
-          sleep 10
-        done
-      }
-
-      ##### Step 1: Set up repositories #####
+      ##### Step 1: Set up repositories - FIXED FOR GPG TTY ERROR #####
       update_status "1" "Setting up repositories" \
         "Adding package sources for Microsoft and Kubernetes"
 
-      echo "Adding Microsoft key..."
-      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg
-      echo "Adding Kubernetes key..."
-      curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes.gpg
+      echo "Adding Microsoft repository..."
+      wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
+      dpkg -i packages-microsoft-prod.deb
+      rm packages-microsoft-prod.deb
 
-      echo "Creating source lists..."
-      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" > /etc/apt/sources.list.d/microsoft-prod.list
-      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli noble main" > /etc/apt/sources.list.d/azure-cli.list
-      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/kubernetes.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
+      echo "Adding Kubernetes repository..."
+      curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | apt-key add -
+      echo "deb https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
 
       ##### Step 2: Install packages #####
       update_status "2" "Installing packages" \
         "Waiting for package manager..." \
-        "This may take several minutes"
+        "This may take several minutes" \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
-      # Wait for any ongoing apt operations to complete
-      wait_for_apt
+      # Wait for any apt locks
+      echo "Waiting for apt locks to be released..."
+      while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+        echo "Waiting for locks to be released..."
+        sleep 5
+      done
 
-      # Update package lists
-      ensure_success "apt-get update" "Failed to update package lists"
-
-      # Install packages one by one to better handle failures
-      update_status "2" "Installing packages" \
-        "Installing: docker.io" \
-        "This may take several minutes"
-      ensure_success "apt-get install -y docker.io" "Failed to install docker.io"
-
-      update_status "2" "Installing packages" \
-        "Installing: azure-cli" \
-        "This may take several minutes"
-      ensure_success "apt-get install -y azure-cli" "Failed to install Azure CLI"
-
-      update_status "2" "Installing packages" \
-        "Installing: kubectl" \
-        "This may take several minutes"
-      ensure_success "apt-get install -y kubectl" "Failed to install kubectl"
+      # Update and install packages with proper error handling
+      echo "Updating package lists..."
+      apt-get update -y || { 
+        echo "Failed to update package lists, retrying..."; 
+        sleep 10; 
+        apt-get update -y; 
+      }
 
       update_status "2" "Installing packages" \
-        "Installing: git wget curl jq gnupg" \
-        "This may take several minutes"
-      ensure_success "apt-get install -y git wget curl jq gnupg" "Failed to install utilities"
+        "Installing core packages" \
+        "This may take several minutes" \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
+
+      apt-get install -y --no-install-recommends docker.io || { 
+        echo "Failed to install docker.io, retrying..."; 
+        sleep 10; 
+        apt-get install -y --no-install-recommends docker.io; 
+      }
+
+      apt-get install -y --no-install-recommends azure-cli || { 
+        echo "Failed to install azure-cli, retrying..."; 
+        sleep 10; 
+        apt-get install -y --no-install-recommends azure-cli; 
+      }
+
+      apt-get install -y --no-install-recommends kubectl || { 
+        echo "Failed to install kubectl, retrying..."; 
+        sleep 10; 
+        apt-get install -y --no-install-recommends kubectl; 
+      }
+
+      apt-get install -y --no-install-recommends git wget curl jq gnupg || { 
+        echo "Failed to install utilities, retrying..."; 
+        sleep 10; 
+        apt-get install -y --no-install-recommends git wget curl jq gnupg; 
+      }
 
       ##### Step 3: Ensure Docker is running #####
       update_status "3" "Starting Docker service" \
@@ -178,10 +166,10 @@ write_files:
       systemctl enable docker
       systemctl start docker
 
-      # Wait for Docker to be fully operational
+      # Wait for Docker to be ready
       echo "Waiting for Docker to be ready..."
-      for i in {1..30}; do
-        if docker info &>/dev/null; then
+      for i in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then
           echo "Docker is ready!"
           break
         fi
@@ -189,7 +177,8 @@ write_files:
           echo "ERROR: Docker failed to start properly after 30 seconds"
           final_status "FAILED" "Docker service failed to start" \
             "Check Docker status: sudo systemctl status docker" \
-            "See logs: journalctl -u docker"
+            "See logs: journalctl -u docker" \
+            "To view live status updates: $ watch cat /etc/motd"
           exit 1
         fi
         echo "Waiting for Docker ($i/30)..."
@@ -200,13 +189,29 @@ write_files:
       update_status "4" "Installing K3d" \
         "Setting up Kubernetes cluster manager"
 
-      ensure_success "curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash" "Failed to install K3d"
+      curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      if ! command -v k3d >/dev/null 2>&1; then
+        echo "ERROR: k3d installation failed"
+        final_status "FAILED" "Failed to install K3d" \
+          "Check the log for details: $LOG_FILE" \
+          "To view live status updates: $ watch cat /etc/motd"
+        exit 1
+      fi
 
       ##### Step 5: Install Helm #####
       update_status "5" "Installing Helm" \
         "Setting up Kubernetes package manager"
 
-      ensure_success "curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash" "Failed to install Helm"
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+
+      if ! command -v helm >/dev/null 2>&1; then
+        echo "ERROR: Helm installation failed"
+        final_status "FAILED" "Failed to install Helm" \
+          "Check the log for details: $LOG_FILE" \
+          "To view live status updates: $ watch cat /etc/motd"
+        exit 1
+      fi
 
       ##### Step 6: Configure environment and detect VM's resource group #####
       update_status "6" "Detecting Azure resources" \
@@ -218,7 +223,13 @@ write_files:
 
       # Log in to Azure using managed identity
       echo "Logging into Azure with managed identity..."
-      ensure_success "az login --identity" "Failed to login to Azure using managed identity"
+      az login --identity || {
+        echo "ERROR: Failed to login to Azure using managed identity"
+        final_status "FAILED" "Azure login failed" \
+          "Check if the VM has a managed identity assigned" \
+          "To view live status updates: $ watch cat /etc/motd"
+        exit 1
+      }
 
       # Get VM metadata
       echo "Getting VM metadata..."
@@ -227,7 +238,8 @@ write_files:
       if [ -z "$VM_METADATA" ]; then
         echo "ERROR: Failed to retrieve VM metadata"
         final_status "FAILED" "Could not retrieve VM metadata" \
-          "Check if VM has access to metadata service"
+          "Check if VM has access to metadata service" \
+          "To view live status updates: $ watch cat /etc/motd"
         exit 1
       fi
 
@@ -247,28 +259,35 @@ write_files:
         "K8s Resource Name: $RESOURCE_NAME"
 
       # Set Azure subscription context
-      ensure_success "az account set --subscription $SUBSCRIPTION_ID" "Failed to set Azure subscription context"
+      az account set --subscription $SUBSCRIPTION_ID
 
       ##### Step 7: Create K3d cluster #####
       update_status "7" "Creating K3d cluster" \
         "Setting up lightweight Kubernetes cluster" \
         "Cluster name: k3s-default" \
         "Exposing ports: 1883, 8883, 8884" \
-        "This may take a few minutes..."
+        "This may take a few minutes..." \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
       # Check if cluster already exists and delete if it does
-      if k3d cluster list | grep -q k3s-default; then
+      if k3d cluster list 2>/dev/null | grep -q k3s-default; then
         echo "Removing existing k3s-default cluster..."
         k3d cluster delete k3s-default
       fi
 
-      # Create the cluster with retries
-      ensure_success "k3d cluster create k3s-default \
+      # Create the cluster
+      k3d cluster create k3s-default \
         -p '1883:1883@loadbalancer' \
         -p '8883:8883@loadbalancer' \
         -p '8884:8884@loadbalancer' \
         --registry-create k3d-registry.localhost:127.0.0.1:5000 \
-        --wait" "Failed to create K3d cluster"
+        --wait || {
+          echo "ERROR: Failed to create K3d cluster"
+          final_status "FAILED" "Failed to create K3d cluster" \
+            "Check the log for details: $LOG_FILE" \
+            "To view live status updates: $ watch cat /etc/motd"
+          exit 1
+        }
 
       ##### Step 8: Configure kubectl #####
       update_status "8" "Configuring kubectl" \
@@ -287,7 +306,13 @@ write_files:
 
       # Verify kubectl works
       echo "Testing kubectl connection..."
-      ensure_success "kubectl get nodes" "kubectl cannot connect to the cluster"
+      kubectl get nodes || {
+        echo "ERROR: kubectl cannot connect to the cluster"
+        final_status "FAILED" "kubectl configuration failed" \
+          "Check the log for details: $LOG_FILE" \
+          "To view live status updates: $ watch cat /etc/motd"
+        exit 1
+      }
 
       ##### Step 9: Connect K8s to Arc #####
       update_status "9" "Connecting to Azure Arc" \
@@ -295,17 +320,24 @@ write_files:
         "Resource Name: $RESOURCE_NAME" \
         "Resource Group: $RESOURCE_GROUP" \
         "Location: $LOCATION" \
-        "This may take several minutes..."
+        "This may take several minutes..." \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
       # Add Azure extensions
       echo "Adding Azure extensions..."
-      ensure_success "az extension add --upgrade --name connectedk8s" "Failed to add connectedk8s extension"
+      az extension add --upgrade --name connectedk8s --yes
 
       # Connect to Arc
-      ensure_success "az connectedk8s connect \
-        --name \"$RESOURCE_NAME\" \
-        --resource-group \"$RESOURCE_GROUP\" \
-        --location \"$LOCATION\"" "Failed to connect Kubernetes to Azure Arc"
+      az connectedk8s connect \
+        --name "$RESOURCE_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --location "$LOCATION" || {
+          echo "ERROR: Failed to connect Kubernetes to Azure Arc"
+          final_status "FAILED" "Failed to connect to Azure Arc" \
+            "Check the log for details: $LOG_FILE" \
+            "To view live status updates: $ watch cat /etc/motd"
+          exit 1
+        }
 
       ##### Step 10: Create storage account #####
       # Generate unique storage account name
@@ -319,12 +351,18 @@ write_files:
         "Resource Group: $RESOURCE_GROUP" \
         "Location: $LOCATION"
 
-      ensure_success "az storage account create \
-        --name \"$STORAGE_ACCOUNT\" \
-        --resource-group \"$RESOURCE_GROUP\" \
-        --location \"$LOCATION\" \
+      az storage account create \
+        --name "$STORAGE_ACCOUNT" \
+        --resource-group "$RESOURCE_GROUP" \
+        --location "$LOCATION" \
         --enable-hierarchical-namespace true \
-        --sku Standard_LRS" "Failed to create storage account"
+        --sku Standard_LRS || {
+          echo "ERROR: Failed to create storage account"
+          final_status "FAILED" "Failed to create storage account" \
+            "Check the log for details: $LOG_FILE" \
+            "To view live status updates: $ watch cat /etc/motd"
+          exit 1
+        }
 
       # Get storage account ID
       SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
@@ -341,13 +379,19 @@ write_files:
         "Storage Account ID: $SA_ID"
 
       echo "Adding IoT Ops extension..."
-      ensure_success "az extension add --upgrade --name azure-iot-ops" "Failed to add IoT Ops extension"
+      az extension add --upgrade --name azure-iot-ops --yes
 
-      ensure_success "az iot ops schema registry create \
-        --name \"$SCHEMA_REGISTRY\" \
-        --resource-group \"$RESOURCE_GROUP\" \
-        --registry-namespace \"default\" \
-        --sa-resource-id \"$SA_ID\"" "Failed to create schema registry"
+      az iot ops schema registry create \
+        --name "$SCHEMA_REGISTRY" \
+        --resource-group "$RESOURCE_GROUP" \
+        --registry-namespace "default" \
+        --sa-resource-id "$SA_ID" || {
+          echo "ERROR: Failed to create schema registry"
+          final_status "FAILED" "Failed to create schema registry" \
+            "Check the log for details: $LOG_FILE" \
+            "To view live status updates: $ watch cat /etc/motd"
+          exit 1
+        }
 
       ##### Step 11: Initialize IoT Operations #####
       update_status "11" "Initializing IoT Operations" \
@@ -355,12 +399,19 @@ write_files:
         "Cluster: $RESOURCE_NAME" \
         "Resource Group: $RESOURCE_GROUP" \
         "Using --no-tls for local dev environment" \
-        "This may take up to 10 minutes..."
+        "This may take up to 10 minutes..." \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
-      ensure_success "az iot ops init \
-        --cluster \"$RESOURCE_NAME\" \
-        --resource-group \"$RESOURCE_GROUP\" \
-        --no-tls" "Failed to initialize IoT Operations"
+      az iot ops init \
+        --cluster "$RESOURCE_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --no-tls || {
+          echo "ERROR: Failed to initialize IoT Operations"
+          final_status "FAILED" "Failed to initialize IoT Operations" \
+            "Check the log for details: $LOG_FILE" \
+            "To view live status updates: $ watch cat /etc/motd"
+          exit 1
+        }
 
       ##### Step 12: Create IoT Ops instance #####
       SR_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
@@ -373,35 +424,44 @@ write_files:
         "Resource Group: $RESOURCE_GROUP" \
         "Schema Registry ID: $SR_ID" \
         "Configuration: Low profile (frontend: 1, backend: 1, RF: 1)" \
-        "This may take several minutes..."
+        "This may take several minutes..." \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
-      ensure_success "az iot ops instance create \
-        --cluster \"$RESOURCE_NAME\" \
-        --resource-group \"$RESOURCE_GROUP\" \
-        --name \"$INSTANCE_NAME\" \
-        --sr-resource-id \"$SR_ID\" \
+      az iot ops instance create \
+        --cluster "$RESOURCE_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$INSTANCE_NAME" \
+        --sr-resource-id "$SR_ID" \
         --broker-frontend-replicas 1 \
         --broker-frontend-workers 1 \
         --broker-backend-part 1 \
         --broker-backend-workers 1 \
         --broker-backend-rf 1 \
-        --broker-mem-profile Low" "Failed to create IoT Ops instance"
+        --broker-mem-profile Low || {
+          echo "ERROR: Failed to create IoT Ops instance"
+          final_status "FAILED" "Failed to create IoT Ops instance" \
+            "Check the log for details: $LOG_FILE" \
+            "To view live status updates: $ watch cat /etc/motd"
+          exit 1
+        }
 
       # Wait for IoT Ops to be ready
       update_status "12" "Waiting for IoT Ops to be ready" \
         "Checking pod status..." \
-        "This may take a few minutes..."
+        "This may take a few minutes..." \
+        "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
       # Wait for all pods to be in Running state
       RETRIES=0
       MAX_RETRIES=20
       while [ $RETRIES -lt $MAX_RETRIES ]; do
-        PENDING_PODS=$(kubectl get pods -A | grep -v "Running\|Completed" | wc -l)
-        if [ "$PENDING_PODS" -eq "0" ]; then
+        NON_RUNNING=$(kubectl get pods -A | grep -v "Running\|Completed" | grep -v "^NAMESPACE" | wc -l)
+        if [ "$NON_RUNNING" -eq "0" ]; then
           echo "All pods are running or completed!"
           break
         fi
         echo "Waiting for pods to be ready... ($RETRIES/$MAX_RETRIES)"
+        kubectl get pods -A | grep -v "Running\|Completed" | grep -v "^NAMESPACE"
         RETRIES=$((RETRIES+1))
         sleep 30
       done
@@ -439,9 +499,9 @@ write_files:
       bash /root/provision_ops_vm.sh &> /var/log/manual-provision.log &
       echo "Started provisioning script in background"
       echo "Monitor progress with: tail -f /var/log/manual-provision.log"
-      echo "Or check status in: /etc/motd"
+      echo "Or monitor progress with: watch cat /etc/motd"
 
-  # 4. Systemd service file with proper dependencies
+  # 4. Systemd service file with your change (removed cloud-final.service dependency)
   - path: /etc/systemd/system/aio-provision.service
     owner: root:root
     permissions: '0644'
@@ -463,11 +523,11 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
-  # Make sure apt is not locked
-  - sleep 15
-  # Create keyrings directory
+  # Create directory for apt keyrings if it doesn't exist
   - mkdir -p /etc/apt/keyrings
-  # Wait for cloud-init to complete before starting our service
+  # Wait for a moment to ensure basic services are up
+  - sleep 30
+  # Start the service
   - systemctl daemon-reload
   - systemctl enable aio-provision.service
   - systemctl start aio-provision.service
