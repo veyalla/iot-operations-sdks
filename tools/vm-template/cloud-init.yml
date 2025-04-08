@@ -22,48 +22,125 @@ packages:
   - git
   - moby-cli
   - moby-engine
-  - wget  # Ensure wget is installed as it's used multiple times
+  - wget # Ensure wget is installed
 
+# Initial MOTD with instructions and basic status
 write_files:
   - path: /etc/motd
     owner: root:root
     permissions: '0644'
     content: |
-      ******************************************************
-      * Provisioning Started - Please Wait          *
-      * System configuration is underway            *
-      ******************************************************
+      +------------------------------------------------------------+
+      |          Azure IoT Operations Dev VM Provisioning          |
+      +------------------------------------------------------------+
+      | Status: Starting Up...                                     |
+      | Action: Initializing cloud-init environment                |
+      |                                                            |
+      | To monitor progress in real-time (from another terminal):  |
+      | $ watch -n 1 -t cat /etc/motd                              |
+      |                                                            |
+      | Please wait for configuration to complete.                 |
+      +------------------------------------------------------------+
 
 runcmd:
-  # Single script block for robust error handling
+  # Single script block for robust error handling and granular MOTD updates
   - |
     #!/bin/bash
-    set -e # Exit immediately if a command exits with a non-zero status.
+    # Use pipefail along with -e to catch errors in pipelines
+    set -eo pipefail
+
+    # --- Configuration ---
+    TOTAL_STEPS=8
+    MOTD_WIDTH=62 # Total width including borders
+
+    # --- Helper Function: update_motd ---
+    # (Function definition remains the same as previous correct version)
+    # Args: $1: Step number (e.g., "1") or status ("ERROR"/"SUCCESS")
+    #       $2: Status message (e.g., "Installing prerequisites")
+    #       $3+: Optional detail lines
+    update_motd() {
+        local step_num="$1"
+        local status_msg="$2"
+        shift 2 # Remove the first two arguments, remaining are detail lines
+        local details=("$@")
+        local text_width=$((MOTD_WIDTH - 4)) # Width available for text inside '* ... *'
+
+        # Header
+        printf '+%.0s' $(seq 1 $MOTD_WIDTH) > /etc/motd
+        echo >> /etc/motd
+
+        # Title/Step Info
+        local step_info
+        if [[ "$step_num" == "ERROR" || "$step_num" == "SUCCESS" ]]; then
+            step_info="$status_msg"
+        else
+            step_info="Step $step_num of $TOTAL_STEPS: $status_msg"
+        fi
+        # Truncate step_info if it's too long (less likely but defensive)
+        if [ ${#step_info} -gt $text_width ]; then
+             step_info="$(echo "$step_info" | head -c $((text_width - 3)))..."
+        fi
+        local padding=$(( (text_width - ${#step_info}) / 2 ))
+        local remainder=$(( (text_width - ${#step_info}) % 2 ))
+        printf '| %*s%s%*s |\n' $padding "" "$step_info" $((padding + remainder)) "" >> /etc/motd
+
+        # Separator (optional, if details exist)
+        if [ ${#details[@]} -gt 0 ]; then
+             printf '|%.0s' $(seq 1 $((MOTD_WIDTH-2))) >> /etc/motd
+             echo '|' >> /etc/motd
+        fi
+
+        # Detail Lines
+        for detail in "${details[@]}"; do
+            # Truncate long details to fit
+            if [ ${#detail} -gt $text_width ]; then
+                detail="$(echo "$detail" | head -c $((text_width - 3)))..."
+            fi
+            padding=$(( (text_width - ${#detail}) / 2 ))
+            remainder=$(( (text_width - ${#detail}) % 2 ))
+            printf '| %*s%s%*s |\n' $padding "" "$detail" $((padding + remainder)) "" >> /etc/motd
+        done
+
+        # Empty line for spacing before footer if details were printed
+         if [ ${#details[@]} -gt 0 ]; then
+             printf '|%*s|\n' $((MOTD_WIDTH-2)) "" >> /etc/motd
+         fi
+
+        # Footer
+        printf '+%.0s' $(seq 1 $MOTD_WIDTH) >> /etc/motd
+        echo >> /etc/motd
+    }
+
 
     # --- Error Handling Function ---
+    # Now gets context from BASH_LINENO, BASH_COMMAND, etc.
     handle_error() {
-      local exit_code=$?
-      local line_no=$1
-      local command="${BASH_COMMAND}"
-      echo "******************************************************" > /etc/motd
-      echo "* PROVISIONING FAILED!                    *" >> /etc/motd
-      echo "*----------------------------------------------------*" >> /etc/motd
-      echo "* Error on or near line ${line_no}                   *" >> /etc/motd
-      echo "* Exit Code: ${exit_code}                            *" >> /etc/motd
-      # Optionally include the failed command if it's not too long/complex
-      # echo "* Command: ${command}                               *" >> /etc/motd
-      echo "* Please check cloud-init logs for details:        *" >> /etc/motd
-      echo "* /var/log/cloud-init.log                        *" >> /etc/motd
-      echo "* /var/log/cloud-init-output.log                 *" >> /etc/motd
-      echo "******************************************************" >> /etc/motd
-      exit $exit_code # Exit script with the same error code
+        local exit_code=$?
+        # BASH_LINENO is an array. [0] is the line number where the error occurred.
+        local line_no=${BASH_LINENO[0]}
+        # BASH_COMMAND contains the command that failed.
+        local command="${BASH_COMMAND:-unknown}"
+
+        # Update MOTD with error details using the helper function
+        update_motd "ERROR" "PROVISIONING FAILED!" \
+            "Error on or near line: ${line_no}" \
+            "Exit Code: ${exit_code}" \
+            "Failed Command Hint: ${command}" \
+            "Check cloud-init logs:" \
+            "/var/log/cloud-init.log" \
+            "/var/log/cloud-init-output.log"
+
+        # Exit with the original error code
+        exit $exit_code
     }
 
     # --- Trap ERR signal ---
-    # Call handle_error function, passing the line number, when ERR signal is received
-    trap 'handle_error $LINENO' ERR
+    # CORRECTED: Provide the function name directly without quotes or args.
+    trap handle_error ERR
 
     # --- Start Provisioning Steps ---
+
+    update_motd "..." "Initializing Variables"
 
     # Set environment variables used in later steps.
     MYUSER=$(id -un 1000)
@@ -73,217 +150,179 @@ runcmd:
     RESOURCE_GROUP={{{resource_group}}}
     RESOURCE_NAME={{{resource_name}}}
 
+
     # -------------------------
     # Step 1 of 8: Install prerequisites.
+    # (Rest of the steps remain the same as the previous correct version)
+    # ... (Steps 1 through 8 as before) ...
     # -------------------------
-    echo "******************************************************" > /etc/motd
-    echo "* Step 1 of 8: Installing prerequisites           *" >> /etc/motd
-    echo "*----------------------------------------------------*" >> /etc/motd
-    echo "* Installing required tools like docker, k3d, helm, *" >> /etc/motd
-    echo "* step CLI, az CLI, and necessary extensions.     *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
+    update_motd "1" "Installing prerequisites" "Updating package lists..."
+    # package_update: true handles this, but good to show status
 
     SYSTEM_NAME=$(uname -r)
-    # Using moby-engine from packages, so manual docker install might not be needed unless specifically avoiding moby
-    # if [[ "$SYSTEM_NAME" != *"microsoft"* && "$SYSTEM_NAME" != *"WSL"* ]]; then
-    #   if ! which docker > /dev/null 2>&1; then
-    #     echo "Installing docker.io..."
-    #     # apt-get update already run by cloud-init package_update: true
-    #     apt-get install -y docker.io
-    #   fi
-    # fi
+    # moby-engine is installed via packages, skip docker.io unless needed
 
     if ! which k3d > /dev/null 2>&1; then
-      echo "Installing k3d..."
-      wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        update_motd "1" "Installing prerequisites" "Downloading & Installing k3d..."
+        wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
     fi
 
     if ! which helm > /dev/null 2>&1; then
-      echo "Installing helm..."
-      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        update_motd "1" "Installing prerequisites" "Downloading & Installing Helm..."
+        # Use curl -fsSL for better error checking in pipelines
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
     fi
 
     if ! which step > /dev/null 2>&1; then
-      echo "Installing step CLI..."
-      # Consider checking architecture, but assuming amd64 for now
-      STEP_VERSION="0.28.0" # Define version for easier updates
-      STEP_DEB="step-cli_${STEP_VERSION}_amd64.deb"
-      wget -q "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/${STEP_DEB}" -P /tmp
-      dpkg -i "/tmp/${STEP_DEB}"
-      rm "/tmp/${STEP_DEB}" # Clean up
+        update_motd "1" "Installing prerequisites" "Downloading & Installing Step CLI..."
+        STEP_VERSION="0.28.0"
+        STEP_DEB="step-cli_${STEP_VERSION}_amd64.deb"
+        wget -q "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/${STEP_DEB}" -P /tmp
+        dpkg -i "/tmp/${STEP_DEB}"
+        rm "/tmp/${STEP_DEB}"
     fi
 
-    # The azure-cli package should handle this, but keeping as a fallback/check
+    # Check Azure CLI (already installed via packages, but confirm `az` command)
+    update_motd "1" "Installing prerequisites" "Verifying Azure CLI..."
     if ! which az > /dev/null 2>&1; then
-      echo "Azure CLI not found via package manager, trying install script..."
-      curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+       update_motd "ERROR" "Azure CLI Installation Failed!" "az command not found after package install."
+       exit 1 # Force failure if package didn't work
     fi
-    # This might still be needed even if az cli is installed via package
-    az aks install-cli --kubelogin-version 0.1.3 --aks-preview-cli-version 0.6.5 || echo "aks install-cli might have warnings/errors but continuing..."
+    update_motd "1" "Installing prerequisites" "Installing AKS CLI components..."
+    az aks install-cli --kubelogin-version 0.1.3 --aks-preview-cli-version 0.6.5 || echo "Warning: aks install-cli command finished with non-zero exit code."
 
 
-    echo "Adding Azure CLI extensions..."
-    az extension add --upgrade --name azure-iot-ops || echo "Failed to add azure-iot-ops extension, continuing..." # Allow failure? Decide based on requirements
-    az extension add --upgrade --name connectedk8s || echo "Failed to add connectedk8s extension, continuing..." # Allow failure? Decide based on requirements
+    update_motd "1" "Installing prerequisites" "Adding Azure CLI extensions..."
+    # Allow extension add to fail sometimes, just print warning
+    az extension add --upgrade --name azure-iot-ops || echo "Warning: Failed to add or upgrade 'azure-iot-ops' extension."
+    az extension add --upgrade --name connectedk8s || echo "Warning: Failed to add or upgrade 'connectedk8s' extension."
+
 
     if ! which k9s > /dev/null 2>&1; then
-      echo "Installing k9s..."
-      # Fetch latest might be unstable, consider pinning a version
-      K9S_DEB_URL=$(wget -qO- https://api.github.com/repos/derailed/k9s/releases/latest | grep 'browser_download_url.*linux_amd64.deb' | cut -d '"' -f 4)
-      if [[ -n "$K9S_DEB_URL" ]]; then
-        wget -q "$K9S_DEB_URL" -P /tmp
-        dpkg -i /tmp/k9s_linux_amd64.deb
-        rm /tmp/k9s_linux_amd64.deb # Clean up
-      else
-        echo "Could not determine k9s latest deb URL. Skipping k9s install."
-      fi
+        update_motd "1" "Installing prerequisites" "Downloading & Installing k9s..."
+        # Getting latest URL robustly
+        K9S_DEB_URL=$(curl -fsSL https://api.github.com/repos/derailed/k9s/releases/latest | grep 'browser_download_url.*linux_amd64.deb' | head -n 1 | cut -d '"' -f 4)
+        if [[ -n "$K9S_DEB_URL" ]]; then
+            wget -q "$K9S_DEB_URL" -P /tmp/k9s.deb
+            dpkg -i /tmp/k9s.deb
+            rm /tmp/k9s.deb # Clean up downloaded file
+        else
+            update_motd "1" "Installing prerequisites" "Warning: Could not determine k9s latest deb URL. Skipping."
+        fi
     fi
 
     # -------------------------
     # Step 2 of 8: Create k3d cluster.
     # -------------------------
-    echo "******************************************************" > /etc/motd
-    echo "* Step 2 of 8: Creating k3d cluster               *" >> /etc/motd
-    echo "* (Setting forwarded ports and registry)          *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    echo "Creating k3d cluster (deleting if exists)..."
+    update_motd "2" "Creating k3d cluster" "Deleting existing cluster (if any)..."
     k3d cluster delete || true # Allow failure if cluster doesn't exist
+
+    update_motd "2" "Creating k3d cluster" "Creating new cluster with registry & ports..." "This may take a few minutes."
     k3d cluster create \
       -p '1883:1883@loadbalancer' \
       -p '8883:8883@loadbalancer' \
       -p '8884:8884@loadbalancer' \
       --registry-create k3d-registry.localhost:127.0.0.1:5000 \
       --wait
-    echo "Setting kubectl context..."
-    # Ensure .kube directory exists and has correct permissions if needed later
-    mkdir -p $MYHOME/.kube
-    chown $MYUSER:$MYUSER $MYHOME/.kube
-    KUBECONFIG_PATH=$(k3d kubeconfig write k3s-default) # Get path to written config
-    cp "$KUBECONFIG_PATH" "$MYHOME/.kube/config" # Copy to default user location
-    chown $MYUSER:$MYUSER "$MYHOME/.kube/config"
-    chmod 600 "$MYHOME/.kube/config"
-    # Set context for root user running the script
+
+    update_motd "2" "Creating k3d cluster" "Configuring kubectl context..."
+    mkdir -p "$MYHOME/.kube"
+    chown "$MYUSER:$MYUSER" "$MYHOME/.kube"
+    # Use k3d kubeconfig merge default --kubeconfig-merge-default to write to default location
+    # Or get path and copy as before:
+    KUBECONFIG_PATH=$(k3d kubeconfig write k3s-default)
+    if [[ -z "$KUBECONFIG_PATH" ]]; then
+        update_motd "ERROR" "Failed to get kubeconfig path from k3d!"
+        exit 1
+    fi
+    install -D -o "$MYUSER" -g "$MYUSER" -m 600 "$KUBECONFIG_PATH" "$MYHOME/.kube/config"
+
+    # Set context for root user running the script and the target user
     kubectl config use-context k3d-k3s-default
     kubectl config set-context --current --namespace=azure-iot-operations
+    # Ensure user context is also set (though usually done via login)
+    sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config use-context k3d-k3s-default
+    sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config set-context --current --namespace=azure-iot-operations
 
 
     # -------------------------
     # Step 3 of 8: Arc-enable the Kubernetes cluster.
     # -------------------------
-    echo "******************************************************" > /etc/motd
-    echo "* Step 3 of 8: Arc-enabling Kubernetes cluster...   *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
+    update_motd "3" "Azure Arc Connection" "Logging into Azure (Managed Identity)..."
+    az login --identity --output none # Suppress login output
 
-    echo "Logging into Azure using Managed Identity..."
-    az login --identity
-    echo "Connecting cluster to Azure Arc..."
-    # Use the kubeconfig generated by k3d for the root user
+    update_motd "3" "Azure Arc Connection" "Connecting cluster to Arc..." "Resource: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "Location: $LOCATION"
+    # Using default kubeconfig which root now uses
     az connectedk8s connect --name "$RESOURCE_NAME" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --correlation-id "" # Pass empty correlation-id for automation
 
     # -------------------------
     # Step 4 of 8: Create Storage Account.
     # -------------------------
-    # Derive a unique suffix from RESOURCE_NAME. Ensure lowercase and alphanumeric. Max length 24.
     UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 18)
     STORAGE_ACCOUNT="st${UNIQUE_SUFFIX}"
-    STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | head -c 24) # Enforce max length 24
+    STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | head -c 24)
 
-    echo "******************************************************" > /etc/motd
-    echo "* Step 4 of 8: Ensuring Storage Account exists      *" >> /etc/motd
-    echo "*----------------------------------------------------*" >> /etc/motd
-    echo "* Storage Account:                                  *" >> /etc/motd
-    printf "* %-46s *\n" "$STORAGE_ACCOUNT" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    echo "Checking for storage account $STORAGE_ACCOUNT..."
-    if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
-      echo "Storage account $STORAGE_ACCOUNT already exists."
+    update_motd "4" "Azure Storage Account" "Checking for account: $STORAGE_ACCOUNT"
+    # Check existence using 'az storage account show' and check exit code
+    if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none &> /dev/null; then
+        update_motd "4" "Azure Storage Account" "Account $STORAGE_ACCOUNT already exists."
     else
-      echo "Creating storage account $STORAGE_ACCOUNT..."
-      az storage account create --name "$STORAGE_ACCOUNT" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --enable-hierarchical-namespace true --sku Standard_RAGRS --kind StorageV2 --output none
+        update_motd "4" "Azure Storage Account" "Creating account: $STORAGE_ACCOUNT..." "RG: $RESOURCE_GROUP" "Location: $LOCATION"
+        az storage account create --name "$STORAGE_ACCOUNT" --location "$LOCATION" --resource-group "$RESOURCE_GROUP" --enable-hierarchical-namespace true --sku Standard_RAGRS --kind StorageV2 --output none
     fi
 
-    echo "Getting Storage Account Resource ID..."
+    update_motd "4" "Azure Storage Account" "Retrieving Resource ID..."
     SA_RESOURCE_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
     if [[ -z "$SA_RESOURCE_ID" ]]; then
-      echo "ERROR: Failed to get Resource ID for Storage Account $STORAGE_ACCOUNT"
-      exit 1 # Force failure
+        update_motd "ERROR" "Failed to get Storage Account ID!" "Account: $STORAGE_ACCOUNT"
+        exit 1
     fi
 
     # -------------------------
     # Step 5 of 8: Create Schema Registry.
     # -------------------------
-    # Derive names, ensuring lowercase, alphanumeric, and reasonable length
     SR_UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 18)
     SCHEMA_REGISTRY="sr${SR_UNIQUE_SUFFIX}"
     SCHEMA_REGISTRY_NAMESPACE="srn${SR_UNIQUE_SUFFIX}"
-    SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | head -c 24) # Adjust length limits as needed
-    SCHEMA_REGISTRY_NAMESPACE=$(echo "$SCHEMA_REGISTRY_NAMESPACE" | head -c 24) # Adjust length limits as needed
+    SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | head -c 24)
+    SCHEMA_REGISTRY_NAMESPACE=$(echo "$SCHEMA_REGISTRY_NAMESPACE" | head -c 24)
 
-    echo "******************************************************" > /etc/motd
-    echo "* Step 5 of 8: Ensuring Schema Registry exists      *" >> /etc/motd
-    echo "*----------------------------------------------------*" >> /etc/motd
-    echo "* Schema Registry:                                  *" >> /etc/motd
-    printf "* %-46s *\n" "$SCHEMA_REGISTRY" >> /etc/motd
-    echo "* Registry Namespace:                              *" >> /etc/motd
-    printf "* %-46s *\n" "$SCHEMA_REGISTRY_NAMESPACE" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    echo "Checking for Schema Registry $SCHEMA_REGISTRY..."
-    if az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
-      echo "Schema registry $SCHEMA_REGISTRY already exists."
+    update_motd "5" "Azure Schema Registry" "Checking for registry: $SCHEMA_REGISTRY"
+    if az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --output none &> /dev/null; then
+        update_motd "5" "Azure Schema Registry" "Registry $SCHEMA_REGISTRY already exists."
     else
-      echo "Creating Schema Registry $SCHEMA_REGISTRY..."
-      az iot ops schema registry create --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --registry-namespace "$SCHEMA_REGISTRY_NAMESPACE" --sa-resource-id "$SA_RESOURCE_ID" --output none
+        update_motd "5" "Azure Schema Registry" "Creating registry: $SCHEMA_REGISTRY..." "Namespace: $SCHEMA_REGISTRY_NAMESPACE" "RG: $RESOURCE_GROUP"
+        az iot ops schema registry create --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --registry-namespace "$SCHEMA_REGISTRY_NAMESPACE" --sa-resource-id "$SA_RESOURCE_ID" --output none
     fi
 
     # -------------------------
     # Step 6 of 8: Initialize IoT Operations.
     # -------------------------
-    echo "******************************************************" > /etc/motd
-    echo "* Step 6 of 8: IoT Ops Init                       *" >> /etc/motd
-    echo "* Command:                                          *" >> /etc/motd
-    echo "* az iot ops init --cluster \"$RESOURCE_NAME\"        *" >> /etc/motd
-    echo "* --resource-group \"$RESOURCE_GROUP\"    *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    echo "Checking if IoT Operations is initialized on cluster $RESOURCE_NAME..."
-    # Need a reliable way to check init status, 'show' might require an instance name. Using a placeholder check.
-    # This might need adjustment based on `az iot ops` behavior. Assume `init` is idempotent or check resources it creates.
-    # For simplicity, we run init if a key resource (like 'aio-dp-reader-proxy') doesn't exist.
+    update_motd "6" "Azure IoT Operations Init" "Checking initialization status..." "Cluster: $RESOURCE_NAME"
+    # Check if key deployment exists
     if ! kubectl get deployment aio-dp-reader-proxy -n azure-iot-operations &> /dev/null; then
-      echo "Initializing IoT Operations on cluster $RESOURCE_NAME..."
-      # Pass --no-tls or configure TLS properly for k3d if needed
-      az iot ops init --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --kv-id "" # Pass required --kv-id or --no-tls etc. Adapt as needed! Example: --no-tls
+        update_motd "6" "Azure IoT Operations Init" "Running az iot ops init..." "Cluster: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "(Using --no-tls for k3d)"
+        # Assuming --no-tls for k3d simplicity, adjust if using KeyVault
+        az iot ops init --cluster "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --no-tls --no-progress
     else
-      echo "IoT Operations appears to be already initialized on cluster $RESOURCE_NAME."
+        update_motd "6" "Azure IoT Operations Init" "Already initialized." "Cluster: $RESOURCE_NAME"
     fi
 
     # -------------------------
     # Step 7 of 8: Create IoT Ops Instance.
     # -------------------------
-    echo "Getting Schema Registry Resource ID..."
+    update_motd "7" "Azure IoT Ops Instance" "Retrieving Schema Registry ID..."
     SR_RESOURCE_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
-     if [[ -z "$SR_RESOURCE_ID" ]]; then
-      echo "ERROR: Failed to get Resource ID for Schema Registry $SCHEMA_REGISTRY"
-      exit 1 # Force failure
+    if [[ -z "$SR_RESOURCE_ID" ]]; then
+      update_motd "ERROR" "Failed to get Schema Registry ID!" "Registry: $SCHEMA_REGISTRY"
+      exit 1
     fi
     INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
-    echo "******************************************************" > /etc/motd
-    echo "* Step 7 of 8: Ensuring IoT Ops Instance exists     *" >> /etc/motd
-    echo "* Command: az iot ops create ...                  *" >> /etc/motd
-    echo "* Instance Name:                                    *" >> /etc/motd
-    printf "* %-46s *\n" "$INSTANCE_NAME" >> /etc/motd
-    echo "* (See logs for full command details)             *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    echo "Checking for IoT Ops instance $INSTANCE_NAME..."
-    # Use 'az iot ops instance show' when available, or check for a deployed resource.
-    # Using a placeholder check for a common deployment from the instance.
+    update_motd "7" "Azure IoT Ops Instance" "Checking for instance: $INSTANCE_NAME"
+    # Check if key deployment exists
     if ! kubectl get deployment aio-mq-dmqtt-frontend -n azure-iot-operations &> /dev/null; then
-        echo "Creating IoT Ops instance $INSTANCE_NAME..."
+        update_motd "7" "Azure IoT Ops Instance" "Creating instance: $INSTANCE_NAME..." "Cluster: $RESOURCE_NAME" "RG: $RESOURCE_GROUP" "(Low profile, RF=1)"
         az iot ops instance create \
             --cluster "$RESOURCE_NAME" \
             --resource-group "$RESOURCE_GROUP" \
@@ -295,41 +334,33 @@ runcmd:
             --broker-backend-workers 1 \
             --broker-backend-rf 1 \
             --broker-mem-profile Low \
-            --output none # Add --no-progress ?
+            --no-progress \
+            --output none
     else
-        echo "IoT Ops instance $INSTANCE_NAME appears to already exist."
+        update_motd "7" "Azure IoT Ops Instance" "Instance $INSTANCE_NAME already exists."
     fi
-
 
     # -------------------------
     # Step 8 of 8: Configure kube config and Finalize.
     # -------------------------
-    echo "******************************************************" > /etc/motd
-    echo "* Step 8 of 8: Configuring kube config            *" >> /etc/motd
-    echo "* and Finalizing Provisioning                     *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
+    update_motd "8" "Finalizing Setup" "Ensuring kubeconfig permissions..." "User: $MYUSER"
+    # Re-apply ownership/permissions just in case
+    install -D -o "$MYUSER" -g "$MYUSER" -m 600 "$MYHOME/.kube/config" "$MYHOME/.kube/config"
 
-    echo "Ensuring kubeconfig is in user's home directory..."
-    # The config was already copied in Step 2, ensure permissions again just in case.
-    install -D -o "$MYUSER" -g "$MYUSER" -m 600 "$KUBECONFIG_PATH" "$MYHOME/.kube/config"
-
-    echo "Setting ownership for workspace directory..."
-    # Ensure the target directory exists before changing ownership
+    update_motd "8" "Finalizing Setup" "Setting workspace ownership..." "Path: $MYWORK"
     mkdir -p "$MYWORK"
     chown -R "$MYUSER":"$MYUSER" "$MYWORK"
 
     # -------------------------
     # Final Success Message
     # -------------------------
-    # Disable the error trap before the final MOTD update
+    # Disable the error trap cleanly before final MOTD update
     trap - ERR
 
-    echo "******************************************************" > /etc/motd
-    echo "* PROVISIONING COMPLETED SUCCESSFULLY!      *" >> /etc/motd
-    echo "*----------------------------------------------------*" >> /etc/motd
-    echo "* System is ready.                                *" >> /etc/motd
-    echo "* Kubeconfig set for user '$MYUSER'                 *" >> /etc/motd
-    echo "* Run 'kubectl get pods -A' to check cluster.     *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
+    update_motd "SUCCESS" "PROVISIONING COMPLETE!" \
+        "System is ready." \
+        "Kubeconfig set for user '$MYUSER'" \
+        "Try: kubectl get pods -A" \
+        "Try: k9s"
 
     echo "Cloud-init script finished successfully."
