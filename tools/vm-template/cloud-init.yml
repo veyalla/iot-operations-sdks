@@ -273,9 +273,6 @@ write_files:
         "VM Name: $VM_NAME" \
         "K8s Resource Name: $RESOURCE_NAME"
 
-      # Set Azure subscription context
-      az account set --subscription $SUBSCRIPTION_ID
-
       ##### Step 7: Create K3d cluster #####
       update_status "7" "Creating K3d cluster" \
         "Setting up lightweight Kubernetes cluster" \
