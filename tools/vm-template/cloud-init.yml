@@ -7,13 +7,13 @@ apt:
   preserve_sources_list: true
   sources:
     msft.list:
-      source: 'deb [signed-by=$KEY_FILE] https://packages.microsoft.com/ubuntu/24.04/prod noble main'
+      source: 'deb [arch=amd64] https://packages.microsoft.com/ubuntu/24.04/prod noble main'
       keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
     azurecli.list:
-      source: 'deb [signed-by=$KEY_FILE] https://packages.microsoft.com/repos/azure-cli noble main'
+      source: 'deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli noble main'
       keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
     kubernetes.list:
-      source: 'deb [signed-by=$KEY_FILE] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
+      source: 'deb [arch=amd64] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
       keyid: DE15B14486CD377B9E876E1A234654DA9A296436
 
 packages:
@@ -129,13 +129,12 @@ write_files:
       export MYUSER=$(id -un 1000)
       export MYHOME=$(eval echo ~$MYUSER)
       export MYWORK="/workspaces"
-      export LOCATION="${LOCATION:-{{{location}}}"
-      export RESOURCE_GROUP="${RESOURCE_GROUP:-{{{resource_group}}}"
-      export RESOURCE_NAME="${RESOURCE_NAME:-{{{resource_name}}}"
+      export LOCATION="${LOCATION:-eastus}"
+      export RESOURCE_GROUP="${RESOURCE_GROUP:-my-iot-ops-rg}"
+      export RESOURCE_NAME="${RESOURCE_NAME:-my-iot-ops-cluster}"
 
-      if [[ "$LOCATION" == "{{{location}}}" || "$RESOURCE_GROUP" == "{{{resource_group}}}" || "$RESOURCE_NAME" == "{{{resource_name}}}" ]]; then
-          update_motd "ERROR" "Missing Required Variables!" "Check cloud-init user-data."
-          exit 1
+      if [[ "$LOCATION" == "eastus" || "$RESOURCE_GROUP" == "my-iot-ops-rg" || "$RESOURCE_NAME" == "my-iot-ops-cluster" ]]; then
+          echo "WARNING: Using default values for LOCATION, RESOURCE_GROUP, or RESOURCE_NAME"
       fi
 
       # -------------------------
@@ -148,15 +147,14 @@ write_files:
           update_motd "1" "Installing prerequisites" "Downloading & Installing k3d..."
           wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
       else
-           update_motd "1" "Installing prerequisites" "k3d already installed."
+          update_motd "1" "Installing prerequisites" "k3d already installed."
       fi
-
 
       if ! command -v helm &> /dev/null; then
           update_motd "1" "Installing prerequisites" "Downloading & Installing Helm..."
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
       else
-           update_motd "1" "Installing prerequisites" "Helm already installed."
+          update_motd "1" "Installing prerequisites" "Helm already installed."
       fi
 
       if ! command -v step &> /dev/null; then
@@ -208,7 +206,6 @@ write_files:
           k3d cluster delete k3s-default || true
       fi
 
-
       update_motd "2" "Creating k3d cluster" "Creating new cluster 'k3s-default'..." "This may take a few minutes."
       k3d cluster create k3s-default \
         -p '1883:1883@loadbalancer' \
@@ -229,7 +226,6 @@ write_files:
       sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config use-context k3d-k3s-default
       sudo -u "$MYUSER" KUBECONFIG="$MYHOME/.kube/config" kubectl config set-context --current --namespace=azure-iot-operations
 
-
       # -------------------------
       # Step 3 of 8: Arc-enable the Kubernetes cluster.
       # -------------------------
@@ -245,7 +241,6 @@ write_files:
       UNIQUE_SUFFIX=$(echo "$RESOURCE_NAME" | sha256sum | head -c 10)
       STORAGE_ACCOUNT="st$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$UNIQUE_SUFFIX"
       STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | head -c 24)
-
 
       update_motd "4" "Azure Storage Account" "Checking for account: $STORAGE_ACCOUNT"
       if az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --output none &> /dev/null; then
@@ -271,7 +266,6 @@ write_files:
       SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]' | head -c 24)
       SCHEMA_REGISTRY_NAMESPACE="srn$(echo "$RESOURCE_NAME" | tr -cd '[:alnum:]' | head -c 10)$SR_SUFFIX_HASH"
       SCHEMA_REGISTRY_NAMESPACE=$(echo "$SCHEMA_REGISTRY_NAMESPACE" | tr '[:upper:]' '[:lower:]' | head -c 24)
-
 
       update_motd "5" "Azure Schema Registry" "Checking for registry: $SCHEMA_REGISTRY"
       if az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --output none &> /dev/null; then
@@ -330,7 +324,6 @@ write_files:
       chown "$MYUSER:$MYUSER" "$MYHOME/.kube/config"
       chmod 600 "$MYHOME/.kube/config"
 
-
       update_motd "8" "Finalizing Setup" "Setting workspace ownership..." "Path: $MYWORK"
       mkdir -p "$MYWORK"
       chown -R "$MYUSER":"$MYUSER" "$MYWORK"
@@ -347,7 +340,6 @@ write_files:
           "Try: k9s"
 
       echo "Script /root/provision_ops_vm.sh finished successfully."
-
 
 runcmd:
   - /root/provision_ops_vm.sh
