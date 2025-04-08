@@ -114,6 +114,8 @@ runcmd:
     # Set the default kubectl context to use the 'azure-iot-operations' namespace.
     kubectl config set-context k3d-k3s-default --namespace=azure-iot-operations
 
+    k3d kubeconfig get -a | sudo tee ~/.kube/config > /dev/null
+
   # ============================================================
   # Step 3: Arc-enable the Kubernetes cluster.
   # ============================================================
@@ -129,23 +131,9 @@ runcmd:
     az connectedk8s connect --name $RESOURCE_NAME --location $LOCATION --resource-group $RESOURCE_GROUP --kube-config .kube/config
 
   # ============================================================
-  # Step 4: Configure kube config for the default user.
-  # ============================================================
-  - |
-    echo "******************************************************" > /etc/motd
-    echo "*  Step 4: Configuring kube config for user         *" >> /etc/motd
-    echo "*  Finalizing provisioning...                        *" >> /etc/motd
-    echo "******************************************************" >> /etc/motd
-
-    install -D -o $MYUSER -g $MYUSER -m 600 $MYWORK/.kube/config $MYHOME/.kube/config
-    chown -R $MYUSER:$MYUSER $MYWORK
-
-  # ============================================================
   # Final Step: Provisioning complete.
   # ============================================================
   - |
     echo "******************************************************" > /etc/motd
     echo "*          Provisioning Complete - VM is Ready       *" >> /etc/motd
-    echo "*   To allow non-root access, run the following:     *" >> /etc/motd
-    echo "*   mkdir ~/.kube; sudo install -o \$USER -g \$USER -m 600 /root/.kube/config ~/.kube/config   *" >> /etc/motd
     echo "******************************************************" >> /etc/motd
