@@ -130,20 +130,17 @@ write_files:
       echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/kubernetes.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
 
       ##### Step 2: Install packages #####
-      # Consolidated status message for package installation
       update_status "2" "Installing packages" \
         "Updating package lists and installing core packages" \
         "This may take several minutes" \
         "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
-      # Wait for any apt locks
       echo "Waiting for apt locks to be released..."
       while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
         echo "Waiting for locks to be released..."
         sleep 5
       done
 
-      # Update and install packages with proper error handling
       echo "Updating package lists..."
       apt-get update -y || { 
         echo "Failed to update package lists, retrying..."; 
@@ -151,7 +148,6 @@ write_files:
         apt-get update -y; 
       }
 
-      # Check if Docker is already installed before trying to install
       if ! command -v docker >/dev/null 2>&1; then
         echo "Installing Docker..."
         apt-get install -y --no-install-recommends docker.io || { 
@@ -163,18 +159,15 @@ write_files:
         echo "Docker is already installed, skipping installation."
       fi
 
-      # Install Azure CLI prerequisites
       echo "Installing Azure CLI prerequisites..."
       apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
 
-      # Check if Azure CLI is already installed
       if ! command -v az >/dev/null 2>&1; then
         echo "Adding Azure CLI repository..."
         mkdir -p /etc/apt/keyrings
         curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
         chmod go+r /etc/apt/keyrings/microsoft.gpg
 
-        # Update apt sources - we've already created the sources file
         apt-get update -y
 
         echo "Installing Azure CLI..."
@@ -187,7 +180,6 @@ write_files:
         echo "Azure CLI is already installed, skipping installation."
       fi
 
-      # Install kubectl if not already installed
       if ! command -v kubectl >/dev/null 2>&1; then
         echo "Installing kubectl..."
         apt-get install -y --no-install-recommends kubectl || { 
@@ -199,7 +191,6 @@ write_files:
         echo "kubectl is already installed, skipping installation."
       fi
 
-      # Install other utilities
       apt-get install -y --no-install-recommends git wget curl jq gnupg || { 
         echo "Failed to install utilities, retrying..."; 
         sleep 10; 
@@ -213,7 +204,6 @@ write_files:
       systemctl enable docker
       systemctl start docker
 
-      # Wait for Docker to be ready
       echo "Waiting for Docker to be ready..."
       for i in $(seq 1 30); do
         if docker info >/dev/null 2>&1; then
@@ -236,7 +226,6 @@ write_files:
       update_status "4" "Installing K3d and K9s" \
         "Setting up Kubernetes cluster manager and terminal UI"
 
-      # Check if k3d is already installed
       if ! command -v k3d >/dev/null 2>&1; then
         echo "Installing k3d..."
         curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
@@ -252,7 +241,6 @@ write_files:
         echo "k3d is already installed, skipping installation."
       fi
 
-      # Install k9s immediately after K3d
       if ! command -v k9s >/dev/null 2>&1; then
         echo "Determining latest k9s version..."
         K9S_VERSION=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | grep -Po '"tag_name": "v\K[^"]*')
@@ -280,7 +268,6 @@ write_files:
       export MYHOME=$(eval echo ~$MYUSER)
       export MYWORK="/workspaces"
 
-      # Create k9s config for user
       mkdir -p "$MYHOME/.k9s"
       cp /root/.k9s/config.yml "$MYHOME/.k9s/"
       chown -R "$MYUSER:$MYUSER" "$MYHOME/.k9s"
@@ -304,9 +291,12 @@ write_files:
         echo "Helm is already installed, skipping installation."
       fi
 
-      ##### Step 6: Configure environment and detect VM's resource group #####
+      ##### Step 6: Configure environment and detect Azure resources #####
       update_status "6" "Detecting Azure resources" \
         "Identifying the VM's resource group and location"
+
+      # Set Azure CLI to use dynamic installation without prompts
+      az config set extension.use_dynamic_install=yes_without_prompt
 
       echo "Getting VM metadata..."
       VM_METADATA=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance?api-version=2021-02-01")
