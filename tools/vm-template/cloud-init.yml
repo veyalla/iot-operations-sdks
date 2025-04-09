@@ -19,7 +19,7 @@ write_files:
       | $ watch cat /etc/motd                                      |
       +------------------------------------------------------------+
 
-  # 2. Improved provisioning script with non-interactive GPG handling
+  # 2. Improved provisioning script with permission fixes
   - path: /root/provision_ops_vm.sh
     owner: root:root
     permissions: '0700'
@@ -236,15 +236,21 @@ write_files:
       export MYHOME=$(eval echo ~$MYUSER)
       export MYWORK="/workspaces"
 
-      # Log in to Azure using managed identity
+      # Log in to Azure using managed identity and capture the output
       echo "Logging into Azure with managed identity..."
-      az login --identity || {
-        echo "ERROR: Failed to login to Azure using managed identity"
-        final_status "FAILED" "Azure login failed" \
+      LOGIN_OUTPUT=$(az login --identity)
+
+      # Extract the VM's managed identity object ID
+      VM_IDENTITY_ID=$(echo $LOGIN_OUTPUT | jq -r '.[0].user.name')
+      echo "VM Managed Identity ID: $VM_IDENTITY_ID"
+
+      if [ -z "$VM_IDENTITY_ID" ] || [ "$VM_IDENTITY_ID" == "null" ]; then
+        echo "ERROR: Failed to extract VM managed identity ID"
+        final_status "FAILED" "Could not determine VM identity" \
           "Check if the VM has a managed identity assigned" \
           "To view live status updates: $ watch cat /etc/motd"
         exit 1
-      }
+      fi
 
       # Get VM metadata
       echo "Getting VM metadata..."
@@ -267,17 +273,18 @@ write_files:
 
       # Update status with detected values
       update_status "6" "Detected Azure environment" \
-        "Subscription ID: $SUBSCRIPTION_ID" \
-        "Resource Group: $RESOURCE_GROUP" \
-        "Location: $LOCATION" \
-        "VM Name: $VM_NAME" \
-        "K8s Resource Name: $RESOURCE_NAME"
+        "Subscription ID:  $SUBSCRIPTION_ID" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION" \
+        "VM Name:          $VM_NAME" \
+        "K8s Resource:     $RESOURCE_NAME" \
+        "VM Identity ID:   $VM_IDENTITY_ID"
 
       ##### Step 7: Create K3d cluster #####
       update_status "7" "Creating K3d cluster" \
         "Setting up lightweight Kubernetes cluster" \
-        "Cluster name: k3s-default" \
-        "Exposing ports: 1883, 8883, 8884" \
+        "Cluster name:     k3s-default" \
+        "Exposing ports:   1883, 8883, 8884" \
         "This may take a few minutes..." \
         "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
@@ -328,10 +335,10 @@ write_files:
 
       ##### Step 9: Connect K8s to Arc #####
       update_status "9" "Connecting to Azure Arc" \
-        "Command: az connectedk8s connect" \
-        "Resource Name: $RESOURCE_NAME" \
-        "Resource Group: $RESOURCE_GROUP" \
-        "Location: $LOCATION" \
+        "Command:          az connectedk8s connect" \
+        "Resource Name:    $RESOURCE_NAME" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION" \
         "This may take several minutes..." \
         "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
@@ -351,17 +358,17 @@ write_files:
           exit 1
         }
 
-      ##### Step 10: Create storage account #####
+      ##### Step 10: Create storage account and assign permissions #####
       # Generate unique storage account name
       UNIQUE_HASH=$(echo "$VM_NAME-$SUBSCRIPTION_ID" | md5sum | head -c 8)
       STORAGE_ACCOUNT="stiot${UNIQUE_HASH}"
       STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]')
 
       update_status "10" "Creating Azure storage account" \
-        "Command: az storage account create" \
-        "Storage Account: $STORAGE_ACCOUNT" \
-        "Resource Group: $RESOURCE_GROUP" \
-        "Location: $LOCATION"
+        "Command:          az storage account create" \
+        "Storage Account:  $STORAGE_ACCOUNT" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION"
 
       az storage account create \
         --name "$STORAGE_ACCOUNT" \
@@ -379,16 +386,43 @@ write_files:
       # Get storage account ID
       SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
 
+      # NEW: Assign necessary roles to the VM managed identity
+      update_status "10" "Assigning storage permissions" \
+        "Granting required roles to VM managed identity" \
+        "Identity:         $VM_IDENTITY_ID" \
+        "Roles:            Owner, Storage Blob Data Owner" \
+        "This may take a minute..."
+
+      echo "Assigning Owner role to VM managed identity on storage account..."
+      az role assignment create \
+        --assignee "$VM_IDENTITY_ID" \
+        --role "Owner" \
+        --scope "$SA_ID" || {
+          echo "WARNING: Failed to assign Owner role, but will continue..."
+        }
+
+      echo "Assigning Storage Blob Data Owner role to VM managed identity..."
+      az role assignment create \
+        --assignee "$VM_IDENTITY_ID" \
+        --role "Storage Blob Data Owner" \
+        --scope "$SA_ID" || {
+          echo "WARNING: Failed to assign Storage Blob Data Owner role, but will continue..."
+        }
+
+      # Wait a moment for role assignments to propagate
+      echo "Waiting for role assignments to propagate..."
+      sleep 30
+
       # Generate unique schema registry name
       SCHEMA_REGISTRY="sriot${UNIQUE_HASH}"
       SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]')
 
       update_status "10" "Creating Azure schema registry" \
-        "Command: az iot ops schema registry create" \
-        "Schema Registry: $SCHEMA_REGISTRY" \
-        "Resource Group: $RESOURCE_GROUP" \
-        "Namespace: default" \
-        "Storage Account ID: $SA_ID"
+        "Command:          az iot ops schema registry create" \
+        "Schema Registry:  $SCHEMA_REGISTRY" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Namespace:        default" \
+        "Storage Account:  $STORAGE_ACCOUNT"
 
       echo "Adding IoT Ops extension..."
       az extension add --upgrade --name azure-iot-ops --yes
@@ -407,9 +441,9 @@ write_files:
 
       ##### Step 11: Initialize IoT Operations #####
       update_status "11" "Initializing IoT Operations" \
-        "Command: az iot ops init" \
-        "Cluster       : $RESOURCE_NAME" \
-        "Resource Group: $RESOURCE_GROUP" \
+        "Command:          az iot ops init" \
+        "Cluster:          $RESOURCE_NAME" \
+        "Resource Group:   $RESOURCE_GROUP" \
         "This may take up to 10 minutes..." \
         "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
@@ -428,12 +462,12 @@ write_files:
       INSTANCE_NAME="${RESOURCE_NAME}-instance"
 
       update_status "12" "Creating IoT Ops Instance" \
-        "Command: az iot ops instance create" \
-        "Instance Name: $INSTANCE_NAME" \
-        "Cluster: $RESOURCE_NAME" \
-        "Resource Group: $RESOURCE_GROUP" \
-        "Schema Registry ID: $SR_ID" \
-        "Configuration: Low profile (frontend: 1, backend: 1, RF: 1)" \
+        "Command:          az iot ops instance create" \
+        "Instance Name:    $INSTANCE_NAME" \
+        "Cluster:          $RESOURCE_NAME" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Schema Registry:  $SCHEMA_REGISTRY" \
+        "Configuration:    Low profile (frontend: 1, backend: 1, RF: 1)" \
         "This may take several minutes..." \
         "Track detailed progress: $ sudo tail -f $LOG_FILE"
 
@@ -536,7 +570,7 @@ runcmd:
   # Create directory for apt keyrings if it doesn't exist
   - mkdir -p /etc/apt/keyrings
   # Wait for a moment to ensure basic services are up
-  - sleep 30
+  - sleep 10
   # Start the service
   - systemctl daemon-reload
   - systemctl enable aio-provision.service
