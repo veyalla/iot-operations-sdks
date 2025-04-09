@@ -295,8 +295,9 @@ write_files:
       update_status "6" "Detecting Azure resources" \
         "Identifying the VM's resource group and location"
 
-      # Set Azure CLI to use dynamic installation without prompts
+      # Set Azure CLI to use dynamic installation without prompts and preview installs
       az config set extension.use_dynamic_install=yes_without_prompt
+      az config set extension.dynamic_install_allow_preview=true
 
       echo "Getting VM metadata..."
       VM_METADATA=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance?api-version=2021-02-01")
