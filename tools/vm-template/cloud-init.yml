@@ -1,42 +1,23 @@
 #cloud-config
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                 AZURE IOT OPERATIONS SETUP                    ║
-# ║         Automated provisioning for Azure IoT Ops              ║
-# ╚══════════════════════════════════════════════════════════════╝
 
-# ┌──────────────────────────────────────────────────────────────┐
-# │ 1. PRE-INSTALLATION: KEYRING SETUP                           │
-# └──────────────────────────────────────────────────────────────┘
-bootcmd:
-  - mkdir -p /etc/apt/keyrings
-  - curl -s https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /etc/apt/keyrings/microsoft.gpg
-
-# ┌──────────────────────────────────────────────────────────────┐
-# │ 2. APT SOURCES AND PACKAGE INSTALLATION                      │
-# └───────────────��──────────────────────────────────────────────┘
+package_upgrade: true
 apt:
   preserve_sources_list: true
   sources:
     msft.list:
-      source: 'deb [signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main'
+      source: 'deb [signed-by=$KEY_FILE] https://packages.microsoft.com/ubuntu/24.04/prod noble main'
       keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
     azurecli.list:
-      source: 'deb [signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli noble main'
+      source: 'deb [signed-by=$KEY_FILE] https://packages.microsoft.com/repos/azure-cli noble main'
       keyid: BC528686B50D79E339D3721CEB3E94ADBE1229CF
     kubernetes.list:
-      source: 'deb [signed-by=/etc/apt/keyrings/microsoft.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
+      source: 'deb [signed-by=$KEY_FILE] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /'
       keyid: DE15B14486CD377B9E876E1A234654DA9A296436
 
 packages:
   - azure-cli
 
-# ┌──────────────────────────────────────────────────────────────┐
-# │ 3. FILES WRITTEN TO THE INSTANCE                             │
-# └──────────────────────────────────────────────────────────────┘
 write_files:
-  # ╭────────────────────────────────────────────────────────────╮
-  # │ 3.1. Initial Message of the Day (MOTD)                     │
-  # ╰────────────────────────────────────────────────────────────╯
   - path: /etc/motd
     owner: root:root
     permissions: "0644"
@@ -55,9 +36,6 @@ write_files:
       ║   watch cat /etc/motd                                       ║
       ╚════════════════════════════════════════════════════════════╝
 
-  # ╭────────────────────────────────────────────────────────────╮
-  # │ 3.2. Provisioning Script                                   │
-  # ╰────────────────────────────────────────────────────────────╯
   - path: /opt/provision_iot_ops.sh
     owner: "1000:1000"   # Use numeric UID/GID for the non-root user
     permissions: "0755"
@@ -323,13 +301,7 @@ write_files:
       # In the foreground, continuously display the MOTD dashboard
       watch cat /etc/motd
 
-# ┌──────────────────────────────────────────────────────────────┐
-# │ 4. RUNCMD: POST-INSTALLATION STEPS                           │
-# └──────────────────────────────────────────────────────────────┘
 runcmd:
-  - mkdir -p /etc/apt/keyrings
-  - curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
-  - chmod go+r /etc/apt/keyrings/microsoft.gpg
   - |
     MYUSER=$(id -un 1000)
     MYHOME=$(eval echo ~$MYUSER)
