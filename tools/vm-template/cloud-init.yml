@@ -623,7 +623,7 @@ write_files:
 
       ##### Step 1: Get Azure subscription information #####
       update_status "1" "Getting Azure subscription information" \
-        "Determining subscription ID and resource details"
+        "Retrieving VM metadata and subscription details"
 
       # Get subscription info
       SUBSCRIPTION_ID=$(az account show --query id -o tsv)
@@ -635,27 +635,59 @@ write_files:
         exit 1
       fi
 
-      # Get default location if not set
+      # Get VM metadata from IMDS
+      echo "Retrieving information from Azure VM metadata service..."
+      VM_METADATA=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance?api-version=2021-02-01")
+
+      if [ $? -ne 0 ] || [ -z "$VM_METADATA" ]; then
+        echo "WARNING: Could not retrieve VM metadata, will use fallback values"
+        # Fallback to default values if metadata retrieval fails
+        RESOURCE_GROUP="iotops-rg"
+        LOCATION="eastus"
+        VM_NAME=$(hostname)
+      else
+        # Parse metadata to extract relevant information
+        # Use jq if available, otherwise use grep and cut
+        if command -v jq >/dev/null 2>&1; then
+          RESOURCE_GROUP=$(echo $VM_METADATA | jq -r '.compute.resourceGroupName')
+          LOCATION=$(echo $VM_METADATA | jq -r '.compute.location')
+          VM_NAME=$(echo $VM_METADATA | jq -r '.compute.name')
+        else
+          # Fallback to pattern matching when jq isn't available
+          RESOURCE_GROUP=$(echo $VM_METADATA | grep -o '"resourceGroupName":"[^"]*"' | cut -d'"' -f4)
+          LOCATION=$(echo $VM_METADATA | grep -o '"location":"[^"]*"' | cut -d'"' -f4)
+          VM_NAME=$(echo $VM_METADATA | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+        fi
+      fi
+
+      # If metadata retrieval failed or values are empty, use defaults
+      if [ -z "$RESOURCE_GROUP" ]; then
+        echo "WARNING: Could not determine resource group from metadata, using default"
+        RESOURCE_GROUP="iotops-rg"
+      fi
+
       if [ -z "$LOCATION" ]; then
+        echo "WARNING: Could not determine location from metadata, using default or account location"
         LOCATION=$(az account list-locations --query "[?metadata.regionType=='Physical'].name" -o tsv | head -1)
         if [ -z "$LOCATION" ]; then
           LOCATION="eastus"  # Default fallback
         fi
       fi
 
-      # Setup resource group if not provided
-      if [ -z "$RESOURCE_GROUP" ]; then
-        RESOURCE_GROUP="iotops-rg"
-        # Check if resource group exists, create if it doesn't
-        az group show --name "$RESOURCE_GROUP" &>/dev/null || {
-          echo "Creating resource group $RESOURCE_GROUP in $LOCATION..."
-          az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
-        }
+      if [ -z "$VM_NAME" ]; then
+        echo "WARNING: Could not determine VM name from metadata, using hostname"
+        VM_NAME=$(hostname)
       fi
 
-      # Get VM name and set resource names
-      VM_NAME=$(hostname)
+      # Set resource name for Arc-enabled Kubernetes
       RESOURCE_NAME="${VM_NAME}-k8s"
+
+      # Create resource group if it doesn't exist
+      echo "Checking if resource group $RESOURCE_GROUP exists..."
+      az group show --name "$RESOURCE_GROUP" &>/dev/null || {
+        echo "Creating resource group $RESOURCE_GROUP in $LOCATION..."
+        az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+      }
 
       echo "Using Azure configuration:"
       echo "Subscription ID: $SUBSCRIPTION_ID"
