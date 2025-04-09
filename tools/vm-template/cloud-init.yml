@@ -19,7 +19,32 @@ write_files:
       | $ watch cat /etc/motd                                      |
       +------------------------------------------------------------+
 
-  # 2. Improved provisioning script with identity fixes
+  # 2. Azure CLI Sources File - Creating this properly upfront
+  - path: /etc/apt/sources.list.d/azure-cli.list
+    owner: root:root
+    permissions: '0644'
+    content: |
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ jammy main
+
+  # 3. k9s Configuration File - Creating this properly upfront
+  - path: /root/.k9s/config.yml
+    owner: root:root
+    permissions: '0644'
+    content: |
+      k9s:
+        refreshRate: 2
+        headless: false
+        readOnly: false
+        noIcons: false
+        logger:
+          tail: 100
+          buffer: 5000
+          sinceSeconds: 60
+          fullScreenLogs: false
+          textWrap: false
+          showTime: false
+
+  # 4. Improved provisioning script
   - path: /root/provision_ops_vm.sh
     owner: root:root
     permissions: '0700'
@@ -153,14 +178,7 @@ write_files:
           gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
         chmod go+r /etc/apt/keyrings/microsoft.gpg
 
-        AZ_DIST=$(lsb_release -cs)
-        echo "Types: deb
-        URIs: https://packages.microsoft.com/repos/azure-cli/
-        Suites: ${AZ_DIST}
-        Components: main
-        Architectures: $(dpkg --print-architecture)
-        Signed-by: /etc/apt/keyrings/microsoft.gpg" | tee /etc/apt/sources.list.d/azure-cli.sources
-
+        # Update apt sources - we've already created the sources file
         apt-get update -y
 
         echo "Installing Azure CLI..."
@@ -271,30 +289,10 @@ write_files:
       export MYHOME=$(eval echo ~$MYUSER)
       export MYWORK="/workspaces"
 
-      # Create a basic ~/.k9s/config.yml file for root and the regular user
-      mkdir -p /root/.k9s
-      if [ ! -f /root/.k9s/config.yml ]; then
-        cat > /root/.k9s/config.yml << EOF
-        k9s:
-          refreshRate: 2
-          headless: false
-          readOnly: false
-          noIcons: false
-          logger:
-            tail: 100
-            buffer: 5000
-            sinceSeconds: 60
-            fullScreenLogs: false
-            textWrap: false
-            showTime: false
-        EOF
-      fi
-
+      # Create k9s config for user
       mkdir -p "$MYHOME/.k9s"
-      if [ ! -f "$MYHOME/.k9s/config.yml" ]; then
-        cp /root/.k9s/config.yml "$MYHOME/.k9s/"
-        chown -R "$MYUSER:$MYUSER" "$MYHOME/.k9s"
-      fi
+      cp /root/.k9s/config.yml "$MYHOME/.k9s/"
+      chown -R "$MYUSER:$MYUSER" "$MYHOME/.k9s"
 
       ##### Step 5: Install Helm #####
       update_status "5" "Installing Helm" \
@@ -343,17 +341,11 @@ write_files:
       echo "Logging into Azure with managed identity..."
       az login --identity > /dev/null
 
-      # Fix for #1: Get the VM's managed identity principal ID correctly
-      echo "Getting VM managed identity principal ID..."
-      VM_PRINCIPAL_ID=$(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query principalId -o tsv)
+      # Get VM resource ID
+      VM_ID=$(az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query id -o tsv)
 
-      if [ -z "$VM_PRINCIPAL_ID" ] || [ "$VM_PRINCIPAL_ID" == "null" ]; then
-        echo "WARNING: Could not get VM principal ID. Will try to use system-assigned identity directly."
-        USE_IDENTITY_RESOURCE_ID="true"
-      else
-        echo "VM Managed Identity Principal ID: $VM_PRINCIPAL_ID"
-        USE_IDENTITY_RESOURCE_ID="false"
-      fi
+      # Get the VM's system-assigned managed identity principal ID
+      VM_PRINCIPAL_ID=$(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query principalId -o tsv 2>/dev/null)
 
       # Update status with detected values
       update_status "6" "Detected Azure environment" \
@@ -520,75 +512,67 @@ write_files:
         "Storage Account:  $STORAGE_ACCOUNT" \
         "This may take a minute..."
 
-      # Use different role assignment methods based on identity retrieval success
-      if [ "$USE_IDENTITY_RESOURCE_ID" = "true" ]; then
-        # Get VM Resource ID
-        VM_ID=$(az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query id -o tsv)
+      # Try multiple methods to assign roles - SIMPLIFIED NO HEREDOC
+      echo "Attempting to assign roles using multiple methods..."
 
-        echo "Assigning Owner role using VM system-assigned identity resource..."
+      # Method 1: Try using principal ID directly
+      if [ ! -z "$VM_PRINCIPAL_ID" ]; then
+        echo "Method 1: Using VM principal ID directly..."
         az role assignment create \
           --assignee-object-id "$VM_PRINCIPAL_ID" \
           --assignee-principal-type ServicePrincipal \
           --role "Owner" \
-          --scope "$SA_ID" || {
-            echo "WARNING: Failed to assign Owner role using principal ID, trying with scope method..."
-            # Try alternative method - assigning to the VM's identity directly
-            az role assignment create \
-              --scope "$SA_ID" \
-              --role "Owner" \
-              --assignee-object-id $(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query principalId -o tsv) \
-              --assignee-principal-type ServicePrincipal || {
-                echo "WARNING: Failed to assign Owner role with alternative method too, but will continue..."
-              }
-          }
+          --scope "$SA_ID" || echo "Method 1 failed for Owner role, will try next method"
 
-        echo "Assigning Storage Blob Data Owner role using VM system-assigned identity resource..."
         az role assignment create \
           --assignee-object-id "$VM_PRINCIPAL_ID" \
           --assignee-principal-type ServicePrincipal \
           --role "Storage Blob Data Owner" \
-          --scope "$SA_ID" || {
-            echo "WARNING: Failed to assign Storage Blob Data Owner role using principal ID, trying with scope method..."
-            # Try alternative method - assigning to the VM's identity directly
-            az role assignment create \
-              --scope "$SA_ID" \
-              --role "Storage Blob Data Owner" \
-              --assignee-object-id $(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query principalId -o tsv) \
-              --assignee-principal-type ServicePrincipal || {
-                echo "WARNING: Failed to assign Storage Blob Data Owner role with alternative method too, but will continue..."
-              }
-          }
-      else
-        # Check if Owner role is already assigned
-        OWNER_ROLE_ASSIGNED=$(az role assignment list --assignee "$VM_PRINCIPAL_ID" --scope "$SA_ID" --query "[?roleDefinitionName=='Owner']" 2>/dev/null)
-        if [[ $OWNER_ROLE_ASSIGNED == "[]" || -z "$OWNER_ROLE_ASSIGNED" ]]; then
-          echo "Assigning Owner role to VM managed identity on storage account..."
+          --scope "$SA_ID" || echo "Method 1 failed for Storage Blob Data Owner role, will try next method"
+      fi
+
+      # Method 2: Try using VM resource ID
+      if [ ! -z "$VM_ID" ]; then
+        echo "Method 2: Using VM resource ID..."
+        # Get the MSI ID
+        MSI_ID=$(az identity list --query "[?resourceGroup=='$RESOURCE_GROUP'].principalId" -o tsv)
+
+        if [ ! -z "$MSI_ID" ]; then
           az role assignment create \
-            --assignee-object-id "$VM_PRINCIPAL_ID" \
+            --assignee-object-id "$MSI_ID" \
             --assignee-principal-type ServicePrincipal \
             --role "Owner" \
-            --scope "$SA_ID" || {
-              echo "WARNING: Failed to assign Owner role, but will continue..."
-            }
-        else
-          echo "Owner role is already assigned to VM managed identity, skipping."
-        fi
+            --scope "$SA_ID" || echo "Method 2 failed for Owner role, will try next method"
 
-        # Check if Storage Blob Data Owner role is already assigned
-        BLOB_ROLE_ASSIGNED=$(az role assignment list --assignee "$VM_PRINCIPAL_ID" --scope "$SA_ID" --query "[?roleDefinitionName=='Storage Blob Data Owner']" 2>/dev/null)
-        if [[ $BLOB_ROLE_ASSIGNED == "[]" || -z "$BLOB_ROLE_ASSIGNED" ]]; then
-          echo "Assigning Storage Blob Data Owner role to VM managed identity..."
           az role assignment create \
-            --assignee-object-id "$VM_PRINCIPAL_ID" \
+            --assignee-object-id "$MSI_ID" \
             --assignee-principal-type ServicePrincipal \
             --role "Storage Blob Data Owner" \
-            --scope "$SA_ID" || {
-              echo "WARNING: Failed to assign Storage Blob Data Owner role, but will continue..."
-            }
-        else
-          echo "Storage Blob Data Owner role is already assigned to VM managed identity, skipping."
+            --scope "$SA_ID" || echo "Method 2 failed for Storage Blob Data Owner role, will try next method"
         fi
       fi
+
+      # Method 3: Use VM's client ID from identity
+      VM_CLIENT_ID=$(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query clientId -o tsv 2>/dev/null)
+      if [ ! -z "$VM_CLIENT_ID" ]; then
+        echo "Method 3: Using VM client ID..."
+        az role assignment create \
+          --assignee "$VM_CLIENT_ID" \
+          --role "Owner" \
+          --scope "$SA_ID" || echo "Method 3 failed for Owner role, will try next method"
+
+        az role assignment create \
+          --assignee "$VM_CLIENT_ID" \
+          --role "Storage Blob Data Owner" \
+          --scope "$SA_ID" || echo "Method 3 failed for Storage Blob Data Owner role, will try next method"
+      fi
+
+      # Method 4: Last resort - allow resource to use managed identity
+      echo "Method 4: Using resource permissions approach..."
+      az storage account update \
+        --name "$STORAGE_ACCOUNT" \
+        --resource-group "$RESOURCE_GROUP" \
+        --assign-identity || echo "Method 4 failed, but will continue anyway"
 
       # Wait a moment for role assignments to propagate
       echo "Waiting for role assignments to propagate..."
@@ -738,7 +722,7 @@ write_files:
       echo "Azure IoT Operations provisioning COMPLETED at $(date)"
       echo "========================================================"
 
-  # 3. Run now script
+  # 5. Run now script
   - path: /root/run_now.sh
     owner: root:root
     permissions: '0700'
@@ -750,7 +734,7 @@ write_files:
       echo "Monitor progress with: tail -f /var/log/manual-provision.log"
       echo "Or monitor progress with: watch cat /etc/motd"
 
-  # 4. Systemd service file with your change (removed cloud-final.service dependency)
+  # 6. Systemd service file
   - path: /etc/systemd/system/aio-provision.service
     owner: root:root
     permissions: '0644'
@@ -774,8 +758,16 @@ write_files:
 runcmd:
   # Create directory for apt keyrings if it doesn't exist
   - mkdir -p /etc/apt/keyrings
+  # Create K9s directory
+  - mkdir -p /root/.k9s 
   # Wait for a moment to ensure basic services are up
-  - sleep 15
+  - sleep 30
+  # Fix permissions on files
+  - chmod 644 /etc/apt/sources.list.d/azure-cli.list
+  - chmod 644 /root/.k9s/config.yml
+  # Get the Microsoft GPG key in advance
+  - curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
+  - chmod go+r /etc/apt/keyrings/microsoft.gpg
   # Start the service
   - systemctl daemon-reload
   - systemctl enable aio-provision.service
