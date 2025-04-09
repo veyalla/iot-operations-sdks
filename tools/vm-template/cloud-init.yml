@@ -454,21 +454,24 @@ write_files:
       az extension add --upgrade --name connectedk8s --yes
 
       # Check if the K8s is already connected to Arc
-      ARC_CONNECTED=$(az connectedk8s show --name "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" 2>/dev/null)
-      if [ -z "$ARC_CONNECTED" ]; then
-        echo "Connecting Kubernetes to Azure Arc..."
-        az connectedk8s connect \
-          --name "$RESOURCE_NAME" \
-          --resource-group "$RESOURCE_GROUP" \
-          --location "$LOCATION" || {
-            echo "ERROR: Failed to connect Kubernetes to Azure Arc"
-            final_status "FAILED" "Failed to connect to Azure Arc" \
-              "Check the log for details: $LOG_FILE" \
-              "To view live status updates: $ watch cat /etc/motd"
-            exit 1
-          }
-      else
-        echo "Kubernetes is already connected to Azure Arc, skipping connection."
+      error_output=$(az connectedk8s connect \
+        --name "$RESOURCE_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --location "$LOCATION" 2>&1) # Capture stderr to variable
+
+      connect_exit_code=$?
+
+      if [ $connect_exit_code -ne 0 ]; then
+        echo "ERROR: Failed to connect Kubernetes to Azure Arc (Exit Code: $connect_exit_code)"
+        echo "Azure CLI Output:"
+        echo "$error_output" # Log the full output
+        # Extract key error message for status reporting
+        error_summary=$(echo "$error_output" | grep -iE 'error|fail|forbidden|timeout' | head -n 3)
+        final_status "FAILED" "Failed to connect to Azure Arc" \
+          "Error Summary: $error_summary..." \
+          "Check the log for full details: $LOG_FILE" \
+          "To view live status updates: $ watch cat /etc/motd" 
+        exit 1
       fi
 
       ##### Step 10: Create storage account and assign permissions #####
