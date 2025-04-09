@@ -415,7 +415,7 @@ write_files:
       echo "Installing mqttui..."
       if ! command -v mqttui >/dev/null 2>&1; then
         mkdir -p /tmp/mqttui
-        wget -q https://github.com/EdJoPaTo/mqttui/releases/latest/download/mqttui-linux-x64.tar.gz -O /tmp/mqttui.tar.gz || {
+        wget -q https://github.com/EdJoPaTo/mqttui/releases/download/v0.22.1/mqttui-v0.22.1-x86_64-unknown-linux-gnu.tar.gz -O /tmp/mqttui.tar.gz || {
           echo "WARNING: Failed to download mqttui, but will continue setup"
         }
 
