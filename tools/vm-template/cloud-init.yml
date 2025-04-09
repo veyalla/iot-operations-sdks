@@ -1,5 +1,9 @@
 #cloud-config
 
+# Note: This script assumes an Ubuntu 22.04 (Jammy) base image
+# Ensure the VM has System-Assigned Managed Identity enabled
+# before deploying this cloud-config.
+
 write_files:
   # 1. Initial MOTD
   - path: /etc/motd
@@ -17,16 +21,21 @@ write_files:
       |                                                            |
       | To watch progress in real-time:                            |
       | $ watch cat /etc/motd                                      |
+      | Or view full logs:                                         |
+      | $ sudo tail -f /var/log/aio-provision.log                  |
+      | Or check service status:                                   |
+      | $ sudo systemctl status aio-provision.service              |
+      | $ journalctl -u aio-provision.service -f                   |
       +------------------------------------------------------------+
 
-  # 2. Azure CLI Sources File - Creating this properly upfront
+  # 2. Azure CLI Sources File - Uses Jammy (Ubuntu 22.04)
   - path: /etc/apt/sources.list.d/azure-cli.list
     owner: root:root
     permissions: '0644'
     content: |
       deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ jammy main
 
-  # 3. k9s Configuration File - Creating this properly upfront
+  # 3. k9s Configuration File - Pre-created for root and user
   - path: /root/.k9s/config.yml
     owner: root:root
     permissions: '0644'
@@ -44,7 +53,7 @@ write_files:
           textWrap: false
           showTime: false
 
-  # 4. Improved provisioning script
+  # 4. Improved provisioning script (HTML tags removed)
   - path: /root/provision_ops_vm.sh
     owner: root:root
     permissions: '0700'
@@ -63,12 +72,13 @@ write_files:
 
       echo "========================================================"
       echo "Starting Azure IoT Operations provisioning at $(date)"
+      echo "Log file: ${LOG_FILE}"
       echo "========================================================"
 
       # Total number of steps
       TOTAL_STEPS=12
 
-      # Function to update status
+      # Function to update status in MOTD
       update_status() {
         local step_num="$1"
         local status_msg="$2"
@@ -79,20 +89,26 @@ write_files:
           echo "+------------------------------------------------------------+"
           echo "|          Azure IoT Operations Dev VM Provisioning          |"
           echo "+------------------------------------------------------------+"
-          echo "| Status: Step $step_num of $TOTAL_STEPS - $status_msg"
-          echo "|"
+          printf "| Status: Step %s of %s - %-35s |\n" "$step_num" "$TOTAL_STEPS" "$status_msg"
+          echo "|                                                            |"
 
           for detail in "${details[@]}"; do
-            echo "| $detail"
+            printf "| %-58s |\n" "$detail"
           done
 
-          echo "|"
-          echo "| To watch progress in real-time: $ watch cat /etc/motd"
+          # Pad with empty lines if fewer details than expected
+          local num_details=${#details[@]}
+          for (( i=$num_details; i<6; i++ )); do
+              echo "|                                                            |"
+          done
+
+          echo "| To watch progress: $ watch cat /etc/motd                   |"
+          echo "| View full logs:  $ sudo tail -f $LOG_FILE                |"
           echo "+------------------------------------------------------------+"
         } > /etc/motd
       }
 
-      # Function to set final status
+      # Function to set final status in MOTD
       final_status() {
         local status="$1"
         local msg="$2"
@@ -103,122 +119,120 @@ write_files:
           echo "+------------------------------------------------------------+"
           echo "|          Azure IoT Operations Dev VM Provisioning          |"
           echo "+------------------------------------------------------------+"
-          echo "| Status: $status"
-          echo "| $msg"
-          echo "|"
+          printf "| Status: %-50s |\n" "$status"
+          printf "| %-58s |\n" "$msg"
+          echo "|                                                            |"
 
           for detail in "${details[@]}"; do
-            echo "| $detail"
+             printf "| %-58s |\n" "$detail"
+          done
+
+           # Pad with empty lines if fewer details than expected
+          local num_details=${#details[@]}
+          for (( i=$num_details; i<10; i++ )); do
+              echo "|                                                            |"
           done
 
           echo "+------------------------------------------------------------+"
         } > /etc/motd
+         # Also log final status
+        echo "================== FINAL STATUS: $status =================="
+        echo "$msg"
+        for detail in "${details[@]}"; do echo "- $detail"; done
+        echo "========================================================"
       }
 
-      ##### Step 1: Set up repositories - FIXED FOR GPG TTY ERROR #####
-      update_status "1" "Setting up repositories" \
-        "Adding package sources for Microsoft and Kubernetes"
+      # --- Provisioning Steps ---
 
-      echo "Adding Microsoft repository..."
-      wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
+      ##### Step 1: Set up repositories #####
+      update_status "1" "Setting up repositories" \
+        "Adding package sources..."
+
+      # Ensure keyring directory exists
+      mkdir -p -m 755 /etc/apt/keyrings
+
+      echo "Adding Microsoft repository for Ubuntu 22.04 (Jammy)..."
+      # Uses the key already fetched by runcmd (/etc/apt/keyrings/microsoft.gpg)
+      wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
       dpkg -i packages-microsoft-prod.deb
       rm packages-microsoft-prod.deb
 
-      echo "Adding Kubernetes repository..."
-      curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | apt-key add -
-      echo "deb https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
+      echo "Adding Kubernetes repository (v1.30)..." # Adjust version if needed
+      K8S_APT_VERSION="v1.30"
+      curl -fsSL "https://pkgs.k8s.io/core:/stable:/${K8S_APT_VERSION}/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${K8S_APT_VERSION}/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list > /dev/null
 
       ##### Step 2: Install packages #####
       update_status "2" "Installing packages" \
-        "Waiting for package manager..." \
-        "This may take several minutes" \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE"
+        "Waiting for package manager lock..." \
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Wait for any apt locks
       echo "Waiting for apt locks to be released..."
       while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-        echo "Waiting for locks to be released..."
+        echo "Waiting for locks..."
         sleep 5
       done
 
-      # Update and install packages with proper error handling
       echo "Updating package lists..."
-      apt-get update -y || { 
-        echo "Failed to update package lists, retrying..."; 
-        sleep 10; 
-        apt-get update -y; 
-      }
+      update_status "2" "Updating package lists" \
+         "Running apt-get update..."
+      apt-get update -y || { echo "WARNING: First apt-get update failed, retrying..."; sleep 10; apt-get update -y; }
 
       update_status "2" "Installing packages" \
-        "Installing core packages" \
-        "This may take several minutes" \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE"
+        "Installing: Docker, Azure CLI, kubectl, Helm, k3d, k9s, utils" \
+        "This may take several minutes..." \
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Check if Docker is already installed before trying to install
+      # Install base packages and prerequisites
+      echo "Installing prerequisites and utilities..."
+      apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release \
+        jq \
+        git \
+        wget || { echo "WARNING: Failed to install base utils, retrying..."; sleep 10; apt-get install -y --no-install-recommends apt-transport-https ca-certificates curl gnupg lsb-release jq git wget; }
+
+      # Check & Install Docker
       if ! command -v docker >/dev/null 2>&1; then
         echo "Installing Docker..."
-        apt-get install -y --no-install-recommends docker.io || { 
-          echo "Failed to install docker.io, retrying..."; 
-          sleep 10; 
-          apt-get install -y --no-install-recommends docker.io; 
-        }
+        apt-get install -y --no-install-recommends docker.io || { echo "WARNING: Failed to install docker.io, retrying..."; sleep 10; apt-get install -y --no-install-recommends docker.io; }
       else
-        echo "Docker is already installed, skipping installation."
+        echo "Docker already installed."
       fi
 
-      # Install Azure CLI using the improved method
-      echo "Installing Azure CLI prerequisites..."
-      apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-
-      # Check if Azure CLI is already installed
+      # Check & Install Azure CLI (relies on sources.list and key from cloud-init)
       if ! command -v az >/dev/null 2>&1; then
-        echo "Adding Azure CLI repository..."
-        mkdir -p /etc/apt/keyrings
-        curl -sLS https://packages.microsoft.com/keys/microsoft.asc | \
-          gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
-        chmod go+r /etc/apt/keyrings/microsoft.gpg
-
-        # Update apt sources - we've already created the sources file
-        apt-get update -y
-
         echo "Installing Azure CLI..."
-        apt-get install -y azure-cli || {
-          echo "Failed to install azure-cli, retrying...";
-          sleep 10;
-          apt-get install -y azure-cli;
-        }
+        apt-get install -y azure-cli || { echo "WARNING: Failed to install azure-cli, retrying..."; sleep 10; apt-get install -y azure-cli; }
       else
-        echo "Azure CLI is already installed, skipping installation."
+        echo "Azure CLI already installed."
       fi
 
-      # Install kubectl if not already installed
+      # Check & Install kubectl
       if ! command -v kubectl >/dev/null 2>&1; then
         echo "Installing kubectl..."
-        apt-get install -y --no-install-recommends kubectl || { 
-          echo "Failed to install kubectl, retrying..."; 
-          sleep 10; 
-          apt-get install -y --no-install-recommends kubectl; 
-        }
+        apt-get install -y --no-install-recommends kubectl || { echo "WARNING: Failed to install kubectl, retrying..."; sleep 10; apt-get install -y --no-install-recommends kubectl; }
       else
-        echo "kubectl is already installed, skipping installation."
+        echo "kubectl already installed."
       fi
 
-      # Install other utilities
-      apt-get install -y --no-install-recommends git wget curl jq gnupg || { 
-        echo "Failed to install utilities, retrying..."; 
-        sleep 10; 
-        apt-get install -y --no-install-recommends git wget curl jq gnupg; 
-      }
+      # Clean up apt cache
+      echo "Cleaning apt cache..."
+      apt-get clean
 
       ##### Step 3: Ensure Docker is running #####
       update_status "3" "Starting Docker service" \
-        "Ensuring Docker daemon is running"
+        "Ensuring Docker daemon is running and ready..."
 
+      echo "Enabling and starting Docker service..."
       systemctl enable docker
       systemctl start docker
 
-      # Wait for Docker to be ready
-      echo "Waiting for Docker to be ready..."
+      echo "Waiting for Docker daemon to be ready..."
       for i in $(seq 1 30); do
         if docker info >/dev/null 2>&1; then
           echo "Docker is ready!"
@@ -228,267 +242,280 @@ write_files:
           echo "ERROR: Docker failed to start properly after 30 seconds"
           final_status "FAILED" "Docker service failed to start" \
             "Check Docker status: sudo systemctl status docker" \
-            "See logs: journalctl -u docker" \
-            "To view live status updates: $ watch cat /etc/motd"
+            "See logs: journalctl -u docker"
           exit 1
         fi
         echo "Waiting for Docker ($i/30)..."
-        sleep 1
+        sleep 2 # Increased sleep slightly
       done
 
-      ##### Step 4: Install K3d #####
+      ##### Step 4: Install K3d & K9s #####
       update_status "4" "Installing K3d" \
-        "Setting up Kubernetes cluster manager"
+        "Downloading and installing K3d..."
 
-      # Check if k3d is already installed
       if ! command -v k3d >/dev/null 2>&1; then
         echo "Installing k3d..."
         curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-
         if ! command -v k3d >/dev/null 2>&1; then
           echo "ERROR: k3d installation failed"
           final_status "FAILED" "Failed to install K3d" \
-            "Check the log for details: $LOG_FILE" \
-            "To view live status updates: $ watch cat /etc/motd"
+            "Check logs: $LOG_FILE"
           exit 1
         fi
+        echo "k3d installed successfully."
       else
-        echo "k3d is already installed, skipping installation."
+        echo "k3d already installed."
       fi
 
-      ##### Install K9s immediately after K3d #####
       update_status "4" "Installing K9s" \
-        "Setting up terminal UI for Kubernetes" \
-        "This provides an easy interface to monitor your cluster"
+        "Downloading K9s Kubernetes UI..." \
+        "Using GitHub API to find latest version"
 
-      # Check if k9s is already installed
       if ! command -v k9s >/dev/null 2>&1; then
-        # Determine latest k9s version
-        K9S_VERSION=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | grep -Po '"tag_name": "v\K[^"]*')
+        # Corrected: Use jq -r and sed to get version number
+        K9S_VERSION=$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | jq -r .tag_name | sed 's/v//')
         if [ -z "$K9S_VERSION" ]; then
-          echo "WARNING: Could not determine latest k9s version, using v0.27.4 as fallback"
-          K9S_VERSION="0.27.4"
+            echo "WARNING: Could not determine latest k9s version via GitHub API. Using fallback v0.32.4"
+            K9S_VERSION="0.32.4" # Update this fallback periodically
         fi
-
         echo "Installing k9s version $K9S_VERSION..."
-        curl -sL https://github.com/derailed/k9s/releases/download/v${K9S_VERSION}/k9s_Linux_amd64.tar.gz | tar xz -C /tmp
+        # Corrected: Ensure tar extracts only k9s binary to /tmp
+        curl -sL "https://github.com/derailed/k9s/releases/download/v${K9S_VERSION}/k9s_Linux_amd64.tar.gz" | tar xz -C /tmp k9s
         mv /tmp/k9s /usr/local/bin/
         chmod +x /usr/local/bin/k9s
-
         if ! command -v k9s >/dev/null 2>&1; then
-          echo "WARNING: k9s installation failed, but will continue with setup"
+           echo "WARNING: k9s installation appears to have failed, but continuing setup."
         else
-          echo "k9s installed successfully!"
+           echo "k9s installed successfully!"
         fi
       else
-        echo "k9s is already installed, skipping installation."
+        echo "k9s already installed."
       fi
 
-      # Set up basic user environment
-      export MYUSER=$(id -un 1000)
-      export MYHOME=$(eval echo ~$MYUSER)
-      export MYWORK="/workspaces"
+      # Set up basic user environment (assuming user ID 1000 is the primary user)
+      MYUSER=$(id -un 1000 || echo "user") # Fallback user if 1000 doesn't exist
+      MYHOME=$(eval echo ~$MYUSER)
+      MYWORK="/workspaces" # Define workspace dir
 
-      # Create k9s config for user
-      mkdir -p "$MYHOME/.k9s"
-      cp /root/.k9s/config.yml "$MYHOME/.k9s/"
-      chown -R "$MYUSER:$MYUSER" "$MYHOME/.k9s"
+      # Create k9s config for the user
+      if [ -d "$MYHOME" ]; then
+        mkdir -p "$MYHOME/.k9s"
+        cp /root/.k9s/config.yml "$MYHOME/.k9s/"
+        chown -R "$MYUSER:$MYUSER" "$MYHOME/.k9s"
+      fi
 
       ##### Step 5: Install Helm #####
       update_status "5" "Installing Helm" \
-        "Setting up Kubernetes package manager"
+        "Downloading and installing Helm..."
 
-      # Check if helm is already installed
       if ! command -v helm >/dev/null 2>&1; then
         echo "Installing Helm..."
-        curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
-
-        if ! command -v helm >/dev/null 2>&1; then
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+         if ! command -v helm >/dev/null 2>&1; then
           echo "ERROR: Helm installation failed"
           final_status "FAILED" "Failed to install Helm" \
-            "Check the log for details: $LOG_FILE" \
-            "To view live status updates: $ watch cat /etc/motd"
+            "Check logs: $LOG_FILE"
           exit 1
         fi
+         echo "Helm installed successfully."
       else
-        echo "Helm is already installed, skipping installation."
+        echo "Helm already installed."
       fi
 
-      ##### Step 6: Configure environment and detect VM's resource group #####
+      ##### Step 6: Configure environment and detect Azure resources #####
       update_status "6" "Detecting Azure resources" \
-        "Identifying the VM's resource group and location"
+        "Querying Azure Instance Metadata Service (IMDS)..." \
+        "Logging into Azure CLI using Managed Identity..."
 
-      # Get VM metadata
-      echo "Getting VM metadata..."
+      echo "Getting VM metadata from IMDS..."
       VM_METADATA=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance?api-version=2021-02-01")
 
       if [ -z "$VM_METADATA" ]; then
-        echo "ERROR: Failed to retrieve VM metadata"
+        echo "ERROR: Failed to retrieve VM metadata from IMDS (http://169.254.169.254)"
         final_status "FAILED" "Could not retrieve VM metadata" \
-          "Check if VM has access to metadata service" \
-          "To view live status updates: $ watch cat /etc/motd"
+          "Ensure VM can reach IMDS & has Managed Identity enabled."
         exit 1
       fi
 
-      # Extract resource group, subscription ID, and location from metadata
-      export SUBSCRIPTION_ID=$(echo $VM_METADATA | jq -r '.compute.subscriptionId')
-      export RESOURCE_GROUP=$(echo $VM_METADATA | jq -r '.compute.resourceGroupName')
-      export LOCATION=$(echo $VM_METADATA | jq -r '.compute.location')
-      export VM_NAME=$(echo $VM_METADATA | jq -r '.compute.name')
-      export RESOURCE_NAME="${VM_NAME}-k8s"
+      # Extract details
+      export SUBSCRIPTION_ID=$(echo "$VM_METADATA" | jq -r '.compute.subscriptionId')
+      export RESOURCE_GROUP=$(echo "$VM_METADATA" | jq -r '.compute.resourceGroupName')
+      export LOCATION=$(echo "$VM_METADATA" | jq -r '.compute.location')
+      export VM_NAME=$(echo "$VM_METADATA" | jq -r '.compute.name')
+      export RESOURCE_NAME="${VM_NAME}-k8s" # Name for Arc-connected cluster resource
 
-      # Log in to Azure using managed identity
-      echo "Logging into Azure with managed identity..."
-      az login --identity > /dev/null
+      echo "Logging into Azure with System-Assigned Managed Identity..."
+      az login --identity > /dev/null || {
+          echo "ERROR: Failed to login to Azure using Managed Identity."
+          final_status "FAILED" "Azure login failed (Managed Identity)" \
+            "Ensure System-Assigned Managed Identity is enabled on VM."
+          exit 1
+      }
+      echo "Azure login successful."
 
-      # Get VM resource ID
-      VM_ID=$(az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query id -o tsv)
-
-      # Get the VM's system-assigned managed identity principal ID
+      # Get VM Principal ID (needed for role assignments)
+      echo "Retrieving VM Managed Identity Principal ID..."
       VM_PRINCIPAL_ID=$(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query principalId -o tsv 2>/dev/null)
 
-      # Update status with detected values
+      if [ -z "$VM_PRINCIPAL_ID" ]; then
+        echo "ERROR: Could not retrieve VM Managed Identity Principal ID."
+        final_status "FAILED" "Failed to get VM Principal ID" \
+          "Ensure System-Assigned Managed Identity is enabled." \
+          "Check 'az vm identity show' command manually."
+         exit 1
+      fi
+      echo "VM Principal ID: $VM_PRINCIPAL_ID"
+
       update_status "6" "Detected Azure environment" \
-        "Subscription ID:  $SUBSCRIPTION_ID" \
-        "Resource Group:   $RESOURCE_GROUP" \
-        "Location:         $LOCATION" \
-        "VM Name:          $VM_NAME" \
-        "K8s Resource:     $RESOURCE_NAME" \
-        "VM Principal ID:  $VM_PRINCIPAL_ID"
+        "Subscription: $SUBSCRIPTION_ID" \
+        "Resource Group: $RESOURCE_GROUP" \
+        "Location:       $LOCATION" \
+        "VM Name:        $VM_NAME" \
+        "Arc K8s Name:   $RESOURCE_NAME" \
+        "VM PrincipalID: $VM_PRINCIPAL_ID"
+
 
       ##### Step 7: Create K3d cluster #####
       update_status "7" "Creating K3d cluster" \
-        "Setting up lightweight Kubernetes cluster" \
-        "Cluster name:     k3s-default" \
-        "Exposing ports:   1883, 8883, 8884" \
+        "Cluster name: k3s-default" \
+        "Exposing ports: 1883, 8883, 8884" \
+        "Creating local registry: k3d-registry.localhost:5000" \
         "This may take a few minutes..." \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE"
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Check if cluster already exists
+      CLUSTER_RECREATED=false
       if k3d cluster list 2>/dev/null | grep -q k3s-default; then
         echo "K3d cluster 'k3s-default' already exists."
-        # Check if it's functioning properly
+        # Simple check: Can we get kubeconfig?
         if k3d kubeconfig get k3s-default > /dev/null 2>&1; then
-          echo "K3d cluster appears to be functioning properly, skipping recreation."
-          CLUSTER_RECREATED=false
+          echo "Existing k3d cluster seems functional. Skipping recreation."
         else
-          echo "K3d cluster exists but may have issues. Recreating..."
+          echo "Existing k3d cluster found but might have issues. Deleting..."
           k3d cluster delete k3s-default
           CLUSTER_RECREATED=true
         fi
       else
-        echo "K3d cluster 'k3s-default' doesn't exist. Creating..."
-        CLUSTER_RECREATED=true
+         CLUSTER_RECREATED=true
       fi
 
-      # Create the cluster if needed
       if [ "$CLUSTER_RECREATED" = true ]; then
+        echo "Creating K3d cluster 'k3s-default'..."
         k3d cluster create k3s-default \
           -p '1883:1883@loadbalancer' \
           -p '8883:8883@loadbalancer' \
           -p '8884:8884@loadbalancer' \
           --registry-create k3d-registry.localhost:127.0.0.1:5000 \
           --wait || {
-            echo "ERROR: Failed to create K3d cluster"
+            echo "ERROR: Failed to create K3d cluster 'k3s-default'"
             final_status "FAILED" "Failed to create K3d cluster" \
-              "Check the log for details: $LOG_FILE" \
-              "To view live status updates: $ watch cat /etc/motd"
+              "Check k3d logs or docker logs for k3d-k3s-default-server-0" \
+              "Check logs: $LOG_FILE"
             exit 1
           }
+         echo "K3d cluster created successfully."
       fi
 
       ##### Step 8: Configure kubectl #####
       update_status "8" "Configuring kubectl" \
-        "Setting up Kubernetes command-line tools" \
-        "Creating .kube directory for user: $MYUSER" \
-        "K9s is now available - run 'k9s' to monitor your cluster"
+        "Setting up kubeconfig for root and user ($MYUSER)" \
+        "Testing cluster connection..." \
+        "Run 'k9s' to monitor cluster"
 
-      # Set up kubectl config for both root and the regular user
+      echo "Creating kubeconfig files..."
       mkdir -p /root/.kube
       k3d kubeconfig get k3s-default > /root/.kube/config
       chmod 600 /root/.kube/config
 
-      mkdir -p "$MYHOME/.kube"
-      k3d kubeconfig get k3s-default > "$MYHOME/.kube/config"
-      chown -R "$MYUSER:$MYUSER" "$MYHOME/.kube"
-      chmod 600 "$MYHOME/.kube/config"
-
-      # Verify kubectl works
-      echo "Testing kubectl connection..."
-      kubectl get nodes || {
-        echo "ERROR: kubectl cannot connect to the cluster"
-        final_status "FAILED" "kubectl configuration failed" \
-          "Check the log for details: $LOG_FILE" \
-          "To view live status updates: $ watch cat /etc/motd"
-        exit 1
-      }
-
-      # Give quick access to k9s for both users
-      echo "Setting up k9s alias..."
-      if ! grep -q "alias k9s" /root/.bashrc; then
-        echo 'alias k9s="KUBECONFIG=$HOME/.kube/config k9s"' >> /root/.bashrc
+      if [ -d "$MYHOME" ]; then
+        mkdir -p "$MYHOME/.kube"
+        k3d kubeconfig get k3s-default > "$MYHOME/.kube/config"
+        chown -R "$MYUSER:$MYUSER" "$MYHOME/.kube"
+        chmod 600 "$MYHOME/.kube/config"
       fi
 
-      if ! grep -q "alias k9s" "$MYHOME/.bashrc"; then
+      echo "Verifying kubectl connection..."
+      kubectl get nodes || {
+        echo "ERROR: kubectl cannot connect to the cluster."
+        final_status "FAILED" "kubectl configuration failed" \
+          "Could not connect to k3d cluster via kubectl." \
+          "Check k3d cluster status and kubeconfig files." \
+          "Check logs: $LOG_FILE"
+        exit 1
+      }
+      echo "kubectl connection verified."
+
+      # Add k9s alias to bashrc if not present
+      echo "Setting up k9s alias in .bashrc..."
+      if ! grep -q "alias k9s=" /root/.bashrc; then
+        echo 'alias k9s="KUBECONFIG=$HOME/.kube/config k9s"' >> /root/.bashrc
+      fi
+      if [ -d "$MYHOME" ] && ! grep -q "alias k9s=" "$MYHOME/.bashrc"; then
         echo 'alias k9s="KUBECONFIG=$HOME/.kube/config k9s"' >> "$MYHOME/.bashrc"
         chown "$MYUSER:$MYUSER" "$MYHOME/.bashrc"
       fi
 
-      # Test k9s can connect to the cluster
-      echo "Testing k9s connection..."
-      KUBECONFIG=/root/.kube/config k9s info --headless > /dev/null || {
-        echo "WARNING: k9s couldn't connect to the cluster, but will continue setup"
-      }
+      # Test k9s connection (best effort)
+      echo "Testing k9s connection (headless)..."
+       if command -v k9s >/dev/null 2>&1; then
+         KUBECONFIG=/root/.kube/config k9s info --headless > /dev/null || {
+            echo "WARNING: k9s command failed or couldn't connect to the cluster. Setup will continue."
+         }
+       else
+         echo "WARNING: k9s command not found, skipping connection test."
+       fi
+
 
       ##### Step 9: Connect K8s to Arc #####
       update_status "9" "Connecting to Azure Arc" \
-        "Command:          az connectedk8s connect" \
-        "Resource Name:    $RESOURCE_NAME" \
-        "Resource Group:   $RESOURCE_GROUP" \
-        "Location:         $LOCATION" \
+        "Resource Name:  $RESOURCE_NAME" \
+        "Resource Group: $RESOURCE_GROUP" \
+        "Location:       $LOCATION" \
+        "Installing/updating connectedk8s extension..." \
         "This may take several minutes..." \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE"
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Add Azure extensions
-      echo "Adding Azure extensions..."
+      echo "Adding/Updating Azure CLI extension: connectedk8s..."
       az extension add --upgrade --name connectedk8s --yes
 
-      # Check if the K8s is already connected to Arc
-      error_output=$(az connectedk8s connect \
-        --name "$RESOURCE_NAME" \
-        --resource-group "$RESOURCE_GROUP" \
-        --location "$LOCATION" 2>&1) # Capture stderr to variable
+      echo "Checking if cluster '$RESOURCE_NAME' is already connected to Arc..."
+      ARC_CONNECTED=$(az connectedk8s show --name "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv 2>/dev/null)
 
-      connect_exit_code=$?
-
-      if [ $connect_exit_code -ne 0 ]; then
-        echo "ERROR: Failed to connect Kubernetes to Azure Arc (Exit Code: $connect_exit_code)"
-        echo "Azure CLI Output:"
-        echo "$error_output" # Log the full output
-        # Extract key error message for status reporting
-        error_summary=$(echo "$error_output" | grep -iE 'error|fail|forbidden|timeout' | head -n 3)
-        final_status "FAILED" "Failed to connect to Azure Arc" \
-          "Error Summary: $error_summary..." \
-          "Check the log for full details: $LOG_FILE" \
-          "To view live status updates: $ watch cat /etc/motd" 
-        exit 1
+      if [ -z "$ARC_CONNECTED" ]; then
+        echo "Connecting Kubernetes cluster '$RESOURCE_NAME' to Azure Arc..."
+        az connectedk8s connect \
+          --name "$RESOURCE_NAME" \
+          --resource-group "$RESOURCE_GROUP" \
+          --location "$LOCATION" || {
+            echo "ERROR: Failed to connect Kubernetes cluster to Azure Arc."
+            final_status "FAILED" "Failed to connect to Azure Arc" \
+              "Check 'az connectedk8s connect' command output." \
+              "Ensure managed identity has needed permissions if applicable." \
+              "Check logs: $LOG_FILE"
+            exit 1
+          }
+        echo "Successfully connected cluster to Azure Arc as '$RESOURCE_NAME'."
+      else
+        echo "Cluster '$RESOURCE_NAME' is already connected to Azure Arc. Skipping."
       fi
 
-      ##### Step 10: Create storage account and assign permissions #####
-      # Generate unique storage account name
+      ##### Step 10: Create Storage Account, Assign Permissions, Create Schema Registry #####
+      # Generate unique storage account name (lowercase letters/numbers, 3-24 chars)
       UNIQUE_HASH=$(echo "$VM_NAME-$SUBSCRIPTION_ID" | md5sum | head -c 8)
-      STORAGE_ACCOUNT="stiot${UNIQUE_HASH}"
+      STORAGE_ACCOUNT="stiot$(echo $VM_NAME | head -c 8)${UNIQUE_HASH}" # Make more unique
+      STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr -dc 'a-z0-9' | head -c 24) # Ensure compliance
       STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]')
 
-      update_status "10" "Creating Azure storage account" \
-        "Command:          az storage account create" \
-        "Storage Account:  $STORAGE_ACCOUNT" \
-        "Resource Group:   $RESOURCE_GROUP" \
-        "Location:         $LOCATION"
+      update_status "10" "Creating Azure Storage Account" \
+        "Account Name:   $STORAGE_ACCOUNT" \
+        "Resource Group: $RESOURCE_GROUP" \
+        "Location:       $LOCATION" \
+        "SKU:            Standard_LRS, Hierarchical Namespace: true" \
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Check if storage account already exists
-      STORAGE_EXISTS=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" 2>/dev/null)
-      if [ -z "$STORAGE_EXISTS" ]; then
+      echo "Checking if storage account '$STORAGE_ACCOUNT' exists..."
+      SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv 2>/dev/null)
+
+      if [ -z "$SA_ID" ]; then
         echo "Creating storage account '$STORAGE_ACCOUNT'..."
         az storage account create \
           --name "$STORAGE_ACCOUNT" \
@@ -496,107 +523,107 @@ write_files:
           --location "$LOCATION" \
           --enable-hierarchical-namespace true \
           --sku Standard_LRS || {
-            echo "ERROR: Failed to create storage account"
+            echo "ERROR: Failed to create storage account '$STORAGE_ACCOUNT'."
             final_status "FAILED" "Failed to create storage account" \
-              "Check the log for details: $LOG_FILE" \
-              "To view live status updates: $ watch cat /etc/motd"
+              "Check Azure quotas and naming rules." \
+              "Check logs: $LOG_FILE"
             exit 1
           }
+        SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+        echo "Storage account created successfully. ID: $SA_ID"
       else
-        echo "Storage account '$STORAGE_ACCOUNT' already exists, skipping creation."
+        echo "Storage account '$STORAGE_ACCOUNT' already exists. ID: $SA_ID"
       fi
 
-      # Get storage account ID
-      SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+      update_status "10" "Assigning Storage Permissions" \
+        "Assigning roles to VM Managed Identity ($VM_PRINCIPAL_ID)" \
+        "Roles: Storage Blob Data Owner, Owner (on Storage Account)" \
+        "Scope: Storage Account ($STORAGE_ACCOUNT)" \
+        "Waiting for Azure propagation..." \
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Assign necessary roles to the VM managed identity
-      update_status "10" "Assigning storage permissions" \
-        "Granting required roles to VM managed identity" \
-        "Storage Account:  $STORAGE_ACCOUNT" \
-        "This may take a minute..."
+      echo "Waiting 60 seconds before assigning roles for propagation..."
+      sleep 60
 
-      # Try multiple methods to assign roles - SIMPLIFIED NO HEREDOC
-      echo "Attempting to assign roles using multiple methods..."
+      # Define roles to assign
+      # Note: 'Owner' is broad, used here for simplicity in dev setup.
+      # 'Storage Blob Data Owner' is required for AIO operations.
+      ROLES_TO_ASSIGN=("Storage Blob Data Owner" "Owner")
+      ASSIGNMENT_SUCCESS=true
+      OVERALL_ASSIGNMENT_STATUS=true # Track if any role failed
 
-      # Method 1: Try using principal ID directly
-      if [ ! -z "$VM_PRINCIPAL_ID" ]; then
-        echo "Method 1: Using VM principal ID directly..."
-        az role assignment create \
-          --assignee-object-id "$VM_PRINCIPAL_ID" \
-          --assignee-principal-type ServicePrincipal \
-          --role "Owner" \
-          --scope "$SA_ID" || echo "Method 1 failed for Owner role, will try next method"
+      for role in "${ROLES_TO_ASSIGN[@]}"; do
+        echo "Attempting to assign role '$role'..."
+        ASSIGNMENT_SUCCESS=false # Assume failure for this role initially
+        for attempt in {1..3}; do
+          # Check if assignment already exists
+          if az role assignment list --assignee "$VM_PRINCIPAL_ID" --scope "$SA_ID" --role "$role" --query "[].id" -o tsv | grep -q "."; then
+             echo "Role '$role' already assigned."
+             ASSIGNMENT_SUCCESS=true # Mark as success
+             break # Role exists, move to next role
+          fi
 
-        az role assignment create \
-          --assignee-object-id "$VM_PRINCIPAL_ID" \
-          --assignee-principal-type ServicePrincipal \
-          --role "Storage Blob Data Owner" \
-          --scope "$SA_ID" || echo "Method 1 failed for Storage Blob Data Owner role, will try next method"
-      fi
-
-      # Method 2: Try using VM resource ID
-      if [ ! -z "$VM_ID" ]; then
-        echo "Method 2: Using VM resource ID..."
-        # Get the MSI ID
-        MSI_ID=$(az identity list --query "[?resourceGroup=='$RESOURCE_GROUP'].principalId" -o tsv)
-
-        if [ ! -z "$MSI_ID" ]; then
-          az role assignment create \
-            --assignee-object-id "$MSI_ID" \
+          # Attempt assignment
+          echo "Attempt $attempt: Assigning role '$role' to $VM_PRINCIPAL_ID on scope $SA_ID"
+          if az role assignment create \
+            --assignee-object-id "$VM_PRINCIPAL_ID" \
             --assignee-principal-type ServicePrincipal \
-            --role "Owner" \
-            --scope "$SA_ID" || echo "Method 2 failed for Owner role, will try next method"
+            --role "$role" \
+            --scope "$SA_ID" > /dev/null; then # Suppress output on success
+             echo "Successfully assigned role '$role'."
+             ASSIGNMENT_SUCCESS=true # Mark as success
+             break # Success, move to next role
+          fi
 
-          az role assignment create \
-            --assignee-object-id "$MSI_ID" \
-            --assignee-principal-type ServicePrincipal \
-            --role "Storage Blob Data Owner" \
-            --scope "$SA_ID" || echo "Method 2 failed for Storage Blob Data Owner role, will try next method"
-        fi
+          # Failed, wait and retry
+          if [ $attempt -lt 3 ]; then
+            echo "Failed attempt $attempt to assign role '$role'. Retrying in 30 seconds..."
+            sleep 30
+          else
+            echo "ERROR: Failed to assign role '$role' after 3 attempts."
+            # Do not exit here, just record the failure
+          fi
+        done
+
+         if ! $ASSIGNMENT_SUCCESS; then
+            OVERALL_ASSIGNMENT_STATUS=false # Mark that at least one role assignment failed
+           # Decide how critical this failure is. For AIO, Blob Data Owner is critical.
+           if [[ "$role" == "Storage Blob Data Owner" ]]; then
+                final_status "FAILED" "Critical role assignment failed" \
+                    "Failed to assign '$role'. Check Permissions/Logs." \
+                    "Log file: $LOG_FILE"
+                exit 1
+           else
+                echo "WARNING: Failed to assign non-critical role '$role'. Continuing..."
+           fi
+         fi
+      done
+
+      if ! $OVERALL_ASSIGNMENT_STATUS; then
+          echo "WARNING: One or more role assignments failed or timed out. Setup continues, but some operations might require manual permission adjustments."
+      else
+          echo "Required role assignments completed or already existed."
       fi
 
-      # Method 3: Use VM's client ID from identity
-      VM_CLIENT_ID=$(az vm identity show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query clientId -o tsv 2>/dev/null)
-      if [ ! -z "$VM_CLIENT_ID" ]; then
-        echo "Method 3: Using VM client ID..."
-        az role assignment create \
-          --assignee "$VM_CLIENT_ID" \
-          --role "Owner" \
-          --scope "$SA_ID" || echo "Method 3 failed for Owner role, will try next method"
 
-        az role assignment create \
-          --assignee "$VM_CLIENT_ID" \
-          --role "Storage Blob Data Owner" \
-          --scope "$SA_ID" || echo "Method 3 failed for Storage Blob Data Owner role, will try next method"
-      fi
-
-      # Method 4: Last resort - allow resource to use managed identity
-      echo "Method 4: Using resource permissions approach..."
-      az storage account update \
-        --name "$STORAGE_ACCOUNT" \
-        --resource-group "$RESOURCE_GROUP" \
-        --assign-identity || echo "Method 4 failed, but will continue anyway"
-
-      # Wait a moment for role assignments to propagate
-      echo "Waiting for role assignments to propagate..."
-      sleep 30
-
+      # Create Schema Registry
       # Generate unique schema registry name
-      SCHEMA_REGISTRY="sriot${UNIQUE_HASH}"
-      SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]')
+      SCHEMA_REGISTRY="sriot$(echo $VM_NAME | head -c 8)${UNIQUE_HASH}"
+      SCHEMA_REGISTRY=$(echo "$SCHEMA_REGISTRY" | tr '[:upper:]' '[:lower:]' | head -c 24)
 
-      update_status "10" "Creating Azure schema registry" \
-        "Command:          az iot ops schema registry create" \
-        "Schema Registry:  $SCHEMA_REGISTRY" \
-        "Resource Group:   $RESOURCE_GROUP" \
-        "Namespace:        default" \
-        "Storage Account:  $STORAGE_ACCOUNT"
+      update_status "10" "Creating Azure Schema Registry" \
+        "Name:           $SCHEMA_REGISTRY" \
+        "Resource Group: $RESOURCE_GROUP" \
+        "Namespace:      default" \
+        "Storage Acct:   $STORAGE_ACCOUNT" \
+        "Installing/updating azure-iot-ops extension..."
 
-      echo "Adding IoT Ops extension..."
+      echo "Adding/Updating Azure CLI extension: azure-iot-ops..."
       az extension add --upgrade --name azure-iot-ops --yes
 
-      # Check if schema registry already exists
-      SCHEMA_REG_EXISTS=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" 2>/dev/null)
+      echo "Checking if schema registry '$SCHEMA_REGISTRY' exists..."
+      SCHEMA_REG_EXISTS=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query name -o tsv 2>/dev/null)
+
       if [ -z "$SCHEMA_REG_EXISTS" ]; then
         echo "Creating schema registry '$SCHEMA_REGISTRY'..."
         az iot ops schema registry create \
@@ -604,59 +631,65 @@ write_files:
           --resource-group "$RESOURCE_GROUP" \
           --registry-namespace "default" \
           --sa-resource-id "$SA_ID" || {
-            echo "ERROR: Failed to create schema registry"
+            echo "ERROR: Failed to create schema registry '$SCHEMA_REGISTRY'."
             final_status "FAILED" "Failed to create schema registry" \
-              "Check the log for details: $LOG_FILE" \
-              "To view live status updates: $ watch cat /etc/motd"
+              "Check prerequisite role assignments ('Storage Blob Data Owner')." \
+              "Check logs: $LOG_FILE"
             exit 1
           }
+         echo "Schema registry '$SCHEMA_REGISTRY' created successfully."
       else
-        echo "Schema registry '$SCHEMA_REGISTRY' already exists, skipping creation."
+        echo "Schema registry '$SCHEMA_REGISTRY' already exists. Skipping creation."
       fi
 
       ##### Step 11: Initialize IoT Operations #####
       update_status "11" "Initializing IoT Operations" \
-        "Command:          az iot ops init" \
-        "Cluster:          $RESOURCE_NAME" \
-        "Resource Group:   $RESOURCE_GROUP" \
+        "Command: az iot ops init" \
+        "Target Cluster: $RESOURCE_NAME (Arc)" \
+        "Resource Group: $RESOURCE_GROUP" \
+        "This deploys AIO CRDs and operator pods..." \
         "This may take up to 10 minutes..." \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE" \
-        "Or use k9s to monitor pods in real-time (just type 'k9s')"
+        "Track cluster state with: k9s"
 
-      # Check if IoT Operations is already initialized
-      IOT_OPS_INITIALIZED=$(kubectl get ns azure-iot-operations 2>/dev/null)
+      # Check if already initialized by looking for the namespace
+      echo "Checking if Azure IoT Operations namespace exists..."
+      IOT_OPS_INITIALIZED=$(kubectl get ns azure-iot-operations --ignore-not-found)
+
       if [ -z "$IOT_OPS_INITIALIZED" ]; then
-        echo "Initializing IoT Operations..."
+        echo "Initializing Azure IoT Operations on cluster '$RESOURCE_NAME'..."
         az iot ops init \
           --cluster "$RESOURCE_NAME" \
           --resource-group "$RESOURCE_GROUP" || {
-            echo "ERROR: Failed to initialize IoT Operations"
+            echo "ERROR: Failed to initialize Azure IoT Operations."
             final_status "FAILED" "Failed to initialize IoT Operations" \
-              "Check the log for details: $LOG_FILE" \
-              "To view live status updates: $ watch cat /etc/motd"
+              "Check 'az iot ops init' command output." \
+              "Ensure cluster is Arc-connected and healthy." \
+              "Check logs: $LOG_FILE"
             exit 1
           }
+        echo "Azure IoT Operations initialized successfully."
       else
-        echo "IoT Operations appears to be already initialized, skipping initialization."
+        echo "Azure IoT Operations namespace 'azure-iot-operations' already exists. Skipping init."
       fi
 
       ##### Step 12: Create IoT Ops instance #####
+      # Get Schema Registry resource ID
       SR_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
-      INSTANCE_NAME="${RESOURCE_NAME}-instance"
+      INSTANCE_NAME="${RESOURCE_NAME}-instance" # Instance name based on Arc resource name
 
       update_status "12" "Creating IoT Ops Instance" \
-        "Command:          az iot ops instance create" \
-        "Instance Name:    $INSTANCE_NAME" \
-        "Cluster:          $RESOURCE_NAME" \
-        "Resource Group:   $RESOURCE_GROUP" \
-        "Schema Registry:  $SCHEMA_REGISTRY" \
-        "Configuration:    Low profile (frontend: 1, backend: 1, RF: 1)" \
-        "This may take several minutes..." \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE" \
-        "Or monitor pods with: k9s"
+        "Command: az iot ops instance create" \
+        "Instance Name:  $INSTANCE_NAME" \
+        "Cluster:        $RESOURCE_NAME (Arc)" \
+        "Resource Group: $RESOURCE_GROUP" \
+        "Schema Reg ID:  $SR_ID" \
+        "Profile:        Low memory (replicas=1, workers=1, rf=1)" \
+        "This deploys Broker, etc. May take several minutes..." \
+        "Track pods with: k9s"
 
-      # Check if IoT Ops instance already exists
-      IOT_INSTANCE_EXISTS=$(az iot ops instance show --name "$INSTANCE_NAME" --resource-group "$RESOURCE_GROUP" 2>/dev/null)
+      echo "Checking if IoT Ops instance '$INSTANCE_NAME' exists..."
+       IOT_INSTANCE_EXISTS=$(az iot ops instance show --name "$INSTANCE_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv 2>/dev/null)
+
       if [ -z "$IOT_INSTANCE_EXISTS" ]; then
         echo "Creating IoT Ops instance '$INSTANCE_NAME'..."
         az iot ops instance create \
@@ -670,72 +703,124 @@ write_files:
           --broker-backend-workers 1 \
           --broker-backend-rf 1 \
           --broker-mem-profile Low || {
-            echo "ERROR: Failed to create IoT Ops instance"
-            final_status "FAILED" "Failed to create IoT Ops instance" \
-              "Check the log for details: $LOG_FILE" \
-              "To view live status updates: $ watch cat /etc/motd"
+            echo "ERROR: Failed to create IoT Ops instance '$INSTANCE_NAME'."
+             final_status "FAILED" "Failed to create IoT Ops instance" \
+              "Check 'az iot ops instance create' command output." \
+              "Ensure AIO was initialized correctly (Step 11)." \
+              "Check prerequisite permissions." \
+              "Check logs: $LOG_FILE"
             exit 1
           }
+          echo "IoT Ops instance '$INSTANCE_NAME' creation initiated."
       else
-        echo "IoT Ops instance '$INSTANCE_NAME' already exists, skipping creation."
+        echo "IoT Ops instance '$INSTANCE_NAME' already exists. Skipping creation."
       fi
 
-      # Wait for IoT Ops to be ready
-      update_status "12" "Waiting for IoT Ops to be ready" \
-        "Checking pod status..." \
-        "This may take a few minutes..." \
-        "Track detailed progress: $ sudo tail -f $LOG_FILE" \
-        "Or use k9s to monitor pods in real-time"
+      update_status "12" "Waiting for IoT Ops pods" \
+        "Checking pod status in all namespaces..." \
+        "Waiting for all pods to be Running or Completed." \
+        "This may take several minutes..." \
+        "Track pods with: k9s" \
+        "Track details: sudo tail -f $LOG_FILE"
 
-      # Wait for all pods to be in Running state
+      echo "Waiting for all Kubernetes pods to be Ready/Completed..."
       RETRIES=0
-      MAX_RETRIES=20
+      MAX_RETRIES=20 # ~10 minutes (20 * 30s)
+      PODS_READY=false
       while [ $RETRIES -lt $MAX_RETRIES ]; do
-        NON_RUNNING=$(kubectl get pods -A | grep -v "Running\|Completed" | grep -v "^NAMESPACE" | wc -l)
-        if [ "$NON_RUNNING" -eq "0" ]; then
-          echo "All pods are running or completed!"
-          break
-        fi
-        echo "Waiting for pods to be ready... ($RETRIES/$MAX_RETRIES)"
-        kubectl get pods -A | grep -v "Running\|Completed" | grep -v "^NAMESPACE"
-        RETRIES=$((RETRIES+1))
-        sleep 30
+          # Get non-running/completed pods, excluding Evicted
+          NON_READY_PODS=$(kubectl get pods -A --no-headers --field-selector=status.phase!=Succeeded,status.phase!=Failed | grep -v "Running.*1/1\|Running.*[2-9]/[2-9]\|Completed") # More robust check for readiness
+          NUM_NON_READY=$(echo -n "$NON_READY_PODS" | grep -c '^') # Count lines accurately
+
+          if [[ -z "$NON_READY_PODS" || "$NUM_NON_READY" -eq 0 ]]; then
+              echo "All pods appear to be Running or Completed!"
+              PODS_READY=true
+              break
+          fi
+
+          echo "Waiting for pods to be ready... ($((RETRIES+1))/$MAX_RETRIES). Still waiting for:"
+          # Provide slightly more info: NS, Name, Ready status, Status
+          echo "$NON_READY_PODS" | awk '{printf "- %s/%s (%s, %s)\n", $1, $2, $3, $4}'
+          RETRIES=$((RETRIES+1))
+
+          if [ $RETRIES -eq $MAX_RETRIES ]; then
+              echo "WARNING: Timed out waiting for all pods to become ready after $MAX_RETRIES attempts."
+              echo "Please check the status of the following pods manually using 'kubectl get pods -A':"
+              echo "$NON_READY_PODS"
+              # Continue to final success message, but with a warning maybe?
+              break # Exit loop, but don't fail the script entirely
+          fi
+          sleep 30
       done
 
       ##### Finalize #####
-      # Create workspace directory
-      mkdir -p "$MYWORK"
-      chown -R "$MYUSER:$MYUSER" "$MYWORK"
+      echo "Performing final setup steps..."
 
-      # Display final success message with environment details
-      final_status "SETUP COMPLETE!" "Your Azure IoT Operations environment is ready to use" \
-        "Environment Details:" \
-        "- Resource Group:   $RESOURCE_GROUP" \
-        "- K8s Resource:     $RESOURCE_NAME" \
-        "- Storage Account:  $STORAGE_ACCOUNT" \
-        "- Schema Registry:  $SCHEMA_REGISTRY" \
-        "- IoT Ops Instance: $INSTANCE_NAME" \
-        "" \
-        "Useful commands:" \
-        "- kubectl get pods -A" \
-        "- kubectl get broker -A" \
-        "- k9s                    (Terminal UI for Kubernetes)"
+      # Create workspace directory for the user
+      if [ -d "$MYHOME" ]; then
+        mkdir -p "$MYWORK"
+        chown "$MYUSER:$MYUSER" "$MYWORK"
+        echo "Created workspace directory: $MYWORK for user $MYUSER"
+      fi
+
+      # Final MOTD Status Update
+      if $PODS_READY && $OVERALL_ASSIGNMENT_STATUS; then
+        final_status "SETUP COMPLETE!" "Azure IoT Operations environment is ready." \
+          "Resource Group:   $RESOURCE_GROUP" \
+          "Arc K8s Resource: $RESOURCE_NAME" \
+          "Storage Account:  $STORAGE_ACCOUNT" \
+          "Schema Registry:  $SCHEMA_REGISTRY" \
+          "IoT Ops Instance: $INSTANCE_NAME" \
+          "" \
+          "Useful commands:" \
+          "kubectl get pods -A" \
+          "kubectl get broker -A" \
+          "k9s                (Kubernetes Terminal UI)" \
+          "cd $MYWORK"
+      else
+        final_status "SETUP COMPLETED WITH WARNINGS" "Environment setup finished, but check warnings." \
+          "Resource Group:   $RESOURCE_GROUP" \
+          "Arc K8s Resource: $RESOURCE_NAME" \
+          "Storage Account:  $STORAGE_ACCOUNT" \
+          "Schema Registry:  $SCHEMA_REGISTRY" \
+          "IoT Ops Instance: $INSTANCE_NAME" \
+          "" \
+          "Warnings encountered (check logs for details):" \
+          $(! $PODS_READY && echo "- Pods not fully ready after timeout.") \
+          $(! $OVERALL_ASSIGNMENT_STATUS && echo "- One or more role assignments failed.") \
+          "" \
+          "Review logs: sudo tail -f $LOG_FILE" \
+          "Check pods: kubectl get pods -A"
+      fi
 
       echo "========================================================"
-      echo "Azure IoT Operations provisioning COMPLETED at $(date)"
+      echo "Azure IoT Operations provisioning finished at $(date)"
+      echo "Log file: ${LOG_FILE}"
+      echo "Final Status: $(if $PODS_READY && $OVERALL_ASSIGNMENT_STATUS; then echo 'SUCCESS'; else echo 'COMPLETED WITH WARNINGS'; fi)"
       echo "========================================================"
 
-  # 5. Run now script
+      exit 0
+
+  # 5. Run now script (for manual execution if needed)
   - path: /root/run_now.sh
     owner: root:root
     permissions: '0700'
     content: |
       #!/bin/bash
-      echo "Starting Azure IoT Operations provisioning..."
-      bash /root/provision_ops_vm.sh &> /var/log/manual-provision.log &
-      echo "Started provisioning script in background"
-      echo "Monitor progress with: tail -f /var/log/manual-provision.log"
-      echo "Or monitor progress with: watch cat /etc/motd"
+      echo "Starting Azure IoT Operations provisioning in background..."
+      # Ensure script isn't already running
+      if pgrep -f /root/provision_ops_vm.sh > /dev/null; then
+          echo "Provisioning script appears to be already running. Check logs."
+          exit 1
+      fi
+      LOG_TIMESTAMP=$(date +%F-%H%M)
+      nohup bash /root/provision_ops_vm.sh &> "/var/log/manual-provision-${LOG_TIMESTAMP}.log" &
+      PID=$!
+      echo "Started provisioning script (PID: $PID) in background."
+      echo "Monitor progress with:"
+      echo "  watch cat /etc/motd"
+      echo "  sudo tail -f /var/log/aio-provision.log"
+      echo "  tail -f /var/log/manual-provision-${LOG_TIMESTAMP}.log"
 
   # 6. Systemd service file
   - path: /etc/systemd/system/aio-provision.service
@@ -743,35 +828,43 @@ write_files:
     permissions: '0644'
     content: |
       [Unit]
-      Description=Azure IoT Operations Provisioning
-      After=network-online.target
+      Description=Azure IoT Operations Provisioning Script
+      Documentation=file:///root/provision_ops_vm.sh
+      After=network-online.target docker.service
+      Wants=network-online.target docker.service
 
       [Service]
       Type=simple
-      ExecStart=/bin/bash /root/provision_ops_vm.sh
       User=root
+      Group=root
+      ExecStart=/bin/bash /root/provision_ops_vm.sh
       StandardOutput=journal+console
       StandardError=journal+console
       Restart=on-failure
-      RestartSec=10s
+      RestartSec=30s
+      TimeoutStartSec=45m # Increased timeout slightly to 45 minutes
 
       [Install]
       WantedBy=multi-user.target
 
+# Commands to run during boot, after files are written
 runcmd:
-  # Create directory for apt keyrings if it doesn't exist
+  # Create necessary directories early
   - mkdir -p /etc/apt/keyrings
-  # Create K9s directory
-  - mkdir -p /root/.k9s 
-  # Wait for a moment to ensure basic services are up
-  - sleep 30
-  # Fix permissions on files
-  - chmod 644 /etc/apt/sources.list.d/azure-cli.list
-  - chmod 644 /root/.k9s/config.yml
-  # Get the Microsoft GPG key in advance
+  - mkdir -p /root/.k9s
+  - mkdir -p /var/log # Ensure log directory exists
+
+  # Wait briefly for network/services to settle (optional, but can help)
+  - sleep 20
+
+  # Fetch Microsoft GPG key (used by azure-cli.list and packages-microsoft-prod.deb)
+  - 'echo "Fetching Microsoft GPG key..."'
   - curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | tee /etc/apt/keyrings/microsoft.gpg > /dev/null
-  - chmod go+r /etc/apt/keyrings/microsoft.gpg
-  # Start the service
+  - chmod 644 /etc/apt/keyrings/microsoft.gpg # Ensure apt can read it
+
+  # Reload systemd, enable and start the provisioning service
+  - 'echo "Reloading systemd and starting provisioning service..."'
   - systemctl daemon-reload
   - systemctl enable aio-provision.service
   - systemctl start aio-provision.service
+  - 'echo "aio-provision.service started. Check /etc/motd or logs for progress."'
