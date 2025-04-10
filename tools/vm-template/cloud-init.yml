@@ -747,6 +747,12 @@ write_files:
 
       # Check if user is logged in to Azure
       if ! az account show &>/dev/null; then
+        echo -e "ACTION REQUIRED Azure login needed"
+        echo -e "Please login to Azure first using:"
+        echo -e "\$ az login"
+        echo -e "Then run this script again:"
+        echo -e "\$ ~/provision_aio.sh"
+
         final_status "ACTION REQUIRED" "Azure login needed" \
           "Please login to Azure first using:" \
           "$ az login" \
@@ -755,10 +761,282 @@ write_files:
         exit 1
       fi
 
-      # Remaining script content is unchanged - full provisioning process
-      # ... (rest of the provision_aio.sh script)
+      ##### Step 1: Get Azure subscription information #####
+      update_status "1" "Getting Azure subscription information" \
+        "Retrieving VM metadata and subscription details"
 
-      # At the end of successful provisioning:
+      # Get subscription info
+      SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+      if [ -z "$SUBSCRIPTION_ID" ]; then
+        final_status "FAILED" "Could not determine Azure subscription" \
+          "Error: Failed to get subscription ID" \
+          "Please ensure you're logged in with: az login" \
+          "Then run this script again"
+        exit 1
+      fi
+
+      # Get VM metadata from IMDS
+      echo "Retrieving information from Azure VM metadata service..."
+      VM_METADATA=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance?api-version=2021-02-01")
+
+      if [ $? -ne 0 ] || [ -z "$VM_METADATA" ]; then
+        echo "WARNING: Could not retrieve VM metadata, will use fallback values"
+        # Fallback to default values if metadata retrieval fails
+        RESOURCE_GROUP="iotops-rg"
+        LOCATION="eastus"
+        VM_NAME=$(hostname)
+      else
+        # Parse metadata to extract relevant information
+        # Use jq if available, otherwise use grep and cut
+        if command -v jq >/dev/null 2>&1; then
+          RESOURCE_GROUP=$(echo $VM_METADATA | jq -r '.compute.resourceGroupName')
+          LOCATION=$(echo $VM_METADATA | jq -r '.compute.location')
+          VM_NAME=$(echo $VM_METADATA | jq -r '.compute.name')
+        else
+          # Fallback to pattern matching when jq isn't available
+          RESOURCE_GROUP=$(echo $VM_METADATA | grep -o '"resourceGroupName":"[^"]*"' | cut -d'"' -f4)
+          LOCATION=$(echo $VM_METADATA | grep -o '"location":"[^"]*"' | cut -d'"' -f4)
+          VM_NAME=$(echo $VM_METADATA | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+        fi
+      fi
+
+      # If metadata retrieval failed or values are empty, use defaults
+      if [ -z "$RESOURCE_GROUP" ]; then
+        echo "WARNING: Could not determine resource group from metadata, using default"
+        RESOURCE_GROUP="iotops-rg"
+      fi
+
+      if [ -z "$LOCATION" ]; then
+        echo "WARNING: Could not determine location from metadata, using default or account location"
+        LOCATION=$(az account list-locations --query "[?metadata.regionType=='Physical'].name" -o tsv | head -1)
+        if [ -z "$LOCATION" ]; then
+          LOCATION="eastus"  # Default fallback
+        fi
+      fi
+
+      if [ -z "$VM_NAME" ]; then
+        echo "WARNING: Could not determine VM name from metadata, using hostname"
+        VM_NAME=$(hostname)
+      fi
+
+      # Set resource names
+      CLUSTER_NAME="${VM_NAME}-k8s"
+      STORAGE_ACCOUNT="stiot$(echo $VM_NAME | md5sum | head -c 8)"
+      STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | cut -c 1-24)
+      SCHEMA_REGISTRY="${VM_NAME}-registry"
+      SCHEMA_REGISTRY_NAMESPACE="default"
+
+      # Save environment variables
+      echo "# Azure IoT Operations Environment Variables" > "$ENV_VARS_FILE"
+      echo "export SUBSCRIPTION_ID=\"$SUBSCRIPTION_ID\"" >> "$ENV_VARS_FILE"
+      echo "export RESOURCE_GROUP=\"$RESOURCE_GROUP\"" >> "$ENV_VARS_FILE"
+      echo "export LOCATION=\"$LOCATION\"" >> "$ENV_VARS_FILE"
+      echo "export VM_NAME=\"$VM_NAME\"" >> "$ENV_VARS_FILE"
+      echo "export CLUSTER_NAME=\"$CLUSTER_NAME\"" >> "$ENV_VARS_FILE"
+      echo "export STORAGE_ACCOUNT=\"$STORAGE_ACCOUNT\"" >> "$ENV_VARS_FILE"
+      echo "export SCHEMA_REGISTRY=\"$SCHEMA_REGISTRY\"" >> "$ENV_VARS_FILE"
+      echo "export SCHEMA_REGISTRY_NAMESPACE=\"$SCHEMA_REGISTRY_NAMESPACE\"" >> "$ENV_VARS_FILE"
+
+      # Create resource group if it doesn't exist
+      echo "Checking if resource group $RESOURCE_GROUP exists..."
+      az group show --name "$RESOURCE_GROUP" &>/dev/null
+      if [ $? -ne 0 ]; then
+        echo "Creating resource group $RESOURCE_GROUP in $LOCATION..."
+        if ! az group create --name "$RESOURCE_GROUP" --location "$LOCATION"; then
+          echo "Error: Failed to create resource group $RESOURCE_GROUP."
+          exit 1
+        fi
+      else
+        echo "Resource group $RESOURCE_GROUP already exists."
+      fi
+
+      echo "Using Azure configuration:"
+      echo "Subscription ID: $SUBSCRIPTION_ID"
+      echo "Resource Group:  $RESOURCE_GROUP"
+      echo "Location:        $LOCATION"
+      echo "VM Name:         $VM_NAME"
+      echo "Cluster Name:    $CLUSTER_NAME"
+      echo "Storage Account: $STORAGE_ACCOUNT"
+      echo "Schema Registry: $SCHEMA_REGISTRY"
+
+      ##### Step 2: Connect K8s to Arc #####
+      update_status "2" "Connecting to Azure Arc" \
+        "Setting up Azure Arc connection" \
+        "Resource Name:    $CLUSTER_NAME" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION"
+
+      # Add and update required Azure extensions
+      echo "Adding/updating Azure extensions..."
+      az extension add --upgrade --name connectedk8s --yes
+      az extension add --upgrade --name azure-iot-ops --yes
+
+      # Ensure required providers are registered
+      echo "Ensuring required resource providers are registered..."
+      for PROVIDER in Microsoft.Kubernetes Microsoft.KubernetesConfiguration Microsoft.ExtendedLocation; do
+        PROVIDER_STATE=$(az provider show -n $PROVIDER --query "registrationState" -o tsv 2>/dev/null)
+
+        if [ "$PROVIDER_STATE" != "Registered" ]; then
+          echo "Registering provider: $PROVIDER (this may take several minutes)..."
+          az provider register --namespace $PROVIDER
+
+          # Wait for registration to complete with timeout
+          MAX_WAIT=20
+          for ((i=1; i<=$MAX_WAIT; i++)); do
+            PROVIDER_STATE=$(az provider show -n $PROVIDER --query "registrationState" -o tsv 2>/dev/null)
+            if [ "$PROVIDER_STATE" == "Registered" ]; then
+              echo "$PROVIDER registration complete!"
+              break
+            fi
+            if [ $i -eq $MAX_WAIT ]; then
+              echo "WARNING: $PROVIDER registration taking longer than expected, continuing anyway..."
+            fi
+            echo "Waiting for $PROVIDER registration: $i/$MAX_WAIT"
+            sleep 15
+          done
+        else
+          echo "$PROVIDER is already registered."
+        fi
+      done
+
+      # Check if already connected to Arc
+      if az connectedk8s show --name "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+        echo "Kubernetes cluster is already connected to Arc!"
+      else
+        echo "Connecting Kubernetes to Azure Arc..."
+        # Clear any previous connection attempts
+        if ! kubectl delete namespace azure-arc --ignore-not-found=true; then
+          echo "Failed to delete existing azure-arc namespace. Exiting."
+          exit 1
+        fi
+
+        # Connect to Arc
+        if ! az connectedk8s connect --name "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP" --location "$LOCATION"; then
+          echo "Error: Failed to connect Kubernetes cluster to Azure Arc."
+          exit 1
+        fi
+      fi
+
+      ##### Step 3: Create storage account #####
+      update_status "3" "Creating Azure storage account" \
+        "Storage Account:  $STORAGE_ACCOUNT" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION"
+
+      # Create storage account if it doesn't exist
+      echo "Checking if storage account '$STORAGE_ACCOUNT' exists..."
+      if ! az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+          echo "Creating storage account '$STORAGE_ACCOUNT'..."
+          az storage account create \
+              --name "$STORAGE_ACCOUNT" \
+              --location "$LOCATION" \
+              --resource-group "$RESOURCE_GROUP" \
+              --enable-hierarchical-namespace true \
+              --sku Standard_RAGRS \
+              --kind StorageV2 \
+              --output none
+          [ $? -ne 0 ] && echo "Error: Failed to create storage account." && exit 1
+      else
+          echo "Storage account '$STORAGE_ACCOUNT' already exists."
+      fi
+
+      # Get Storage Account Resource ID
+      SA_RESOURCE_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+      echo "export SA_RESOURCE_ID=\"$SA_RESOURCE_ID\"" >> "$ENV_VARS_FILE"
+
+      ##### Step 4: Initialize IoT Operations #####
+      update_status "4" "Initializing Azure IoT Operations" \
+        "Installing AIO extensions and operators" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Cluster:          $CLUSTER_NAME" \
+        "This may take several minutes..." \
+        "Track detailed progress: $ tail -f $LOG_FILE"
+
+      # Initialize IoT Ops if not already initialized
+
+      # Define instance name
+      INSTANCE_NAME="${CLUSTER_NAME}-instance"
+
+      echo "Initializing IoT Operations on cluster..."
+      if ! az iot ops show --name "$INSTANCE_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+          az iot ops init --cluster "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP"
+          [ $? -ne 0 ] && echo "Error: Failed to initialize IoT Operations." && exit 1
+      else
+          echo "IoT Operations already initialized on cluster."
+      fi
+
+      ##### Step 5: Create Schema Registry #####
+      update_status "5" "Creating Schema Registry" \
+        "Setting up Schema Registry for IoT Operations" \
+        "Schema Registry:  $SCHEMA_REGISTRY" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION"
+
+      # Create schema registry if it doesn't exist
+      echo "Checking if schema registry '$SCHEMA_REGISTRY' exists..."
+      if ! az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
+          echo "Creating schema registry '$SCHEMA_REGISTRY'..."
+          az iot ops schema registry create \
+              --name "$SCHEMA_REGISTRY" \
+              --resource-group "$RESOURCE_GROUP" \
+              --registry-namespace "$SCHEMA_REGISTRY_NAMESPACE" \
+              --sa-resource-id "$SA_RESOURCE_ID" \
+              --output none
+          [ $? -ne 0 ] && echo "Error: Failed to create schema registry." && exit 1
+      else
+          echo "Schema registry '$SCHEMA_REGISTRY' already exists."
+      fi
+
+      # Get Schema Registry Resource ID
+      SR_RESOURCE_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+      echo "export SR_RESOURCE_ID=\"$SR_RESOURCE_ID\"" >> "$ENV_VARS_FILE"
+
+      ##### Step 6: Create IoT Ops Instance #####
+      update_status "6" "Creating IoT Operations instance" \
+        "Creating IoT Operations resources" \
+        "IoT Ops Instance: $INSTANCE_NAME" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Schema Registry:  $SCHEMA_REGISTRY"
+
+      # Create IoT Ops instance if it doesn't exist
+      echo "Checking if IoT Operations instance '$INSTANCE_NAME' exists..."
+      if ! az iot ops show --resource-group "$RESOURCE_GROUP" --name "$INSTANCE_NAME" &> /dev/null; then
+          echo "Creating IoT Operations instance '$INSTANCE_NAME'..."
+          az iot ops create \
+              --cluster "$CLUSTER_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$INSTANCE_NAME" \
+              --sr-resource-id "$SR_RESOURCE_ID" \
+              --broker-frontend-replicas 1 \
+              --broker-frontend-workers 1 \
+              --broker-backend-part 1 \
+              --broker-backend-workers 1 \
+              --broker-backend-rf 2 \
+              --broker-mem-profile Low \
+              --output none
+          [ $? -ne 0 ] && echo "Error: Failed to create IoT Operations instance." && exit 1
+      else
+          echo "IoT Operations instance '$INSTANCE_NAME' already exists."
+      fi
+
+      # Save the instance name to env vars
+      echo "export INSTANCE_NAME=\"$INSTANCE_NAME\"" >> "$ENV_VARS_FILE"
+
+      echo "Azure IoT Operations installation successful!"
+
+      final_status "COMPLETE" "Azure IoT Operations successfully installed" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Cluster:          $CLUSTER_NAME" \
+        "Storage Account:  $STORAGE_ACCOUNT" \
+        "Schema Registry:  $SCHEMA_REGISTRY" \
+        "IoT Ops Instance: $INSTANCE_NAME" \
+        "" \
+        "Environment variables saved to: $ENV_VARS_FILE" \
+        "Run 'source $ENV_VARS_FILE' to load these variables" \
+        "Run 'k9s' to monitor your Kubernetes cluster" \
+        "Run 'az iot ops --help' to see available commands"
+
+
       # Create provisioning completion flag with timestamp
       date > "${PROVISION_COMPLETE_FLAG}"
 
