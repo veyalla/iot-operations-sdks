@@ -912,7 +912,7 @@ write_files:
       STORAGE_ACCOUNT="stiot$(echo $VM_NAME | md5sum | head -c 8)"
       STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | cut -c 1-24)
       SCHEMA_REGISTRY="${VM_NAME}-registry"
-      SCHEMA_REGISTRY_NAMESPACE="default"
+      SCHEMA_REGISTRY_NAMESPACE="${VM_NAME}-registry-ns"
 
       # Save environment variables
       echo "# Azure IoT Operations Environment Variables" > "$ENV_VARS_FILE"
