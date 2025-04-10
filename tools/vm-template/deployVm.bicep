@@ -16,7 +16,7 @@ param authenticationType string = 'sshPublicKey'
 param adminPasswordOrKey string
 
 @description('The size of the VM, at least 16GB RAM is required')
-param vmSize string = 'Standard_E2a_v4'
+param vmSize string = 'Standard_B4as_v2'
 
 var ubuntuOSVersion = {
   publisher: 'Canonical'

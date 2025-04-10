@@ -623,8 +623,7 @@ write_files:
       }
 
       # Check if user is logged in to Azure
-      az account show &>/dev/null
-      if [ $? -ne 0 ]; then
+      if ! az account show &>/dev/null; then
         final_status "ACTION REQUIRED" "Azure login needed" \
           "Please login to Azure first using:" \
           "$ az login" \
