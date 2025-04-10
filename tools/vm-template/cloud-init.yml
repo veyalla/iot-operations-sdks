@@ -1,7 +1,7 @@
 #cloud-config
 
 write_files:
-  # 1. Initial MOTD (unchanged)
+  # 1. Initial MOTD
   - path: /etc/motd
     owner: root:root
     permissions: '0644'
@@ -17,14 +17,14 @@ write_files:
       | $ watch cat /etc/motd                                      |
       +------------------------------------------------------------+
 
-  # 2. Azure CLI Sources File (unchanged)
+  # 2. Azure CLI Sources File
   - path: /etc/apt/sources.list.d/azure-cli.list
     owner: root:root
     permissions: '0644'
     content: |
       deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ jammy main
 
-  # 3. k9s Configuration File (unchanged)
+  # 3. k9s Configuration File
   - path: /root/.k9s/config.yml
     owner: root:root
     permissions: '0644'
@@ -42,7 +42,123 @@ write_files:
           textWrap: false
           showTime: false
 
-  # 4. Modified initialization script with improved restart handling
+  # 4. MOTD update service - Runs on boot to set correct MOTD
+  - path: /usr/local/bin/update_aio_motd.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+
+      # Path to initialization completion flag
+      INIT_COMPLETE_FLAG="/var/lib/aio-init-complete"
+
+      # Get regular user info
+      MYUSER=$(id -un 1000 2>/dev/null || echo "ubuntu")
+      MYHOME=$(eval echo ~$MYUSER)
+
+      # Path to user's provisioning completion flag
+      PROVISION_COMPLETE_FLAG="$MYHOME/.aio-provision-complete"
+
+      # Path to environment variables file
+      ENV_VARS_FILE="$MYHOME/aio-env.sh"
+
+      # Check if system is fully provisioned
+      if [ -f "${INIT_COMPLETE_FLAG}" ] && [ -f "${PROVISION_COMPLETE_FLAG}" ]; then
+        # System is fully provisioned, load environment variables to get resource names
+        if [ -f "$ENV_VARS_FILE" ]; then
+          # Extract values without sourcing the file (safer for a root script)
+          RESOURCE_GROUP=$(grep -oP 'export RESOURCE_GROUP="\K[^"]+' "$ENV_VARS_FILE" || echo "iotops-rg")
+          CLUSTER_NAME=$(grep -oP 'export CLUSTER_NAME="\K[^"]+' "$ENV_VARS_FILE" || echo "k8s-cluster")
+          STORAGE_ACCOUNT=$(grep -oP 'export STORAGE_ACCOUNT="\K[^"]+' "$ENV_VARS_FILE" || echo "stiotaccount")
+          SCHEMA_REGISTRY=$(grep -oP 'export SCHEMA_REGISTRY="\K[^"]+' "$ENV_VARS_FILE" || echo "schema-registry")
+          INSTANCE_NAME=$(grep -oP 'export INSTANCE_NAME="\K[^"]+' "$ENV_VARS_FILE" || echo "iot-instance")
+
+          # Update MOTD for fully provisioned system
+          {
+            echo "+------------------------------------------------------------+"
+            echo "|          Azure IoT Operations Environment                  |"
+            echo "+------------------------------------------------------------+"
+            echo "| Status: FULLY PROVISIONED"
+            echo "| System initialized on: $(cat ${INIT_COMPLETE_FLAG})"
+            echo "| AIO provisioned on:    $(cat ${PROVISION_COMPLETE_FLAG})"
+            echo "|"
+            echo "| Azure IoT Operations is ready to use with:"
+            echo "| - Resource Group:   $RESOURCE_GROUP"
+            echo "| - Cluster:          $CLUSTER_NAME" 
+            echo "| - Storage Account:  $STORAGE_ACCOUNT"
+            echo "| - Schema Registry:  $SCHEMA_REGISTRY"
+            echo "| - IoT Ops Instance: $INSTANCE_NAME"
+            echo "|"
+            echo "| Quick start commands:"
+            echo "| - Load environment:  $ source ~/aio-env.sh"
+            echo "| - View K8s cluster:  $ k9s"
+            echo "| - View IoT status:   $ az iot ops show --name \$INSTANCE_NAME --resource-group \$RESOURCE_GROUP"
+            echo "| - View IoT namespace: $ k9s -n azure-iot-operations"
+            echo "+------------------------------------------------------------+"
+          } > /etc/motd
+        else
+          # Missing environment file
+          {
+            echo "+------------------------------------------------------------+"
+            echo "|          Azure IoT Operations Environment                  |"
+            echo "+------------------------------------------------------------+"
+            echo "| Status: PROVISIONED WITH WARNINGS"
+            echo "| System initialized on: $(cat ${INIT_COMPLETE_FLAG})"
+            echo "| AIO provisioned on:    $(cat ${PROVISION_COMPLETE_FLAG})"
+            echo "|"
+            echo "| WARNING: Environment file not found at $ENV_VARS_FILE"
+            echo "| Some environment information is unavailable."
+            echo "|"
+            echo "| Quick start commands:"
+            echo "| - View K8s cluster:  $ k9s"
+            echo "| - View IoT namespace: $ k9s -n azure-iot-operations"
+            echo "+------------------------------------------------------------+"
+          } > /etc/motd
+        fi
+      elif [ -f "${INIT_COMPLETE_FLAG}" ]; then
+        # Only initialization is complete
+        {
+          echo "+------------------------------------------------------------+"
+          echo "|          Azure IoT Operations Dev VM Setup                 |"
+          echo "+------------------------------------------------------------+"
+          echo "| Status: INITIALIZATION COMPLETE"
+          echo "| Base tools installation completed on $(cat ${INIT_COMPLETE_FLAG})"
+          echo "|"
+          echo "| The following tools are installed:"
+          echo "| - Azure CLI (az)"
+          echo "| - Docker"
+          echo "| - kubectl"
+          echo "| - k3d (Kubernetes cluster manager)"
+          echo "| - k9s (Kubernetes terminal UI)"
+          echo "| - mqttui (MQTT client UI)"
+          echo "|"
+          echo "| To complete setup, AS THE REGULAR USER (not root):"
+          echo "| 1. $ az login"
+          echo "| 2. $ ~/provision_aio.sh"
+          echo "+------------------------------------------------------------+"
+        } > /etc/motd
+      fi
+
+      exit 0
+
+  # 5. MOTD Update Service
+  - path: /etc/systemd/system/aio-motd.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Azure IoT Operations MOTD Update
+      After=network.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/update_aio_motd.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # 6. Initial setup script (for systemd service)
   - path: /root/initialize_vm.sh
     owner: root:root
     permissions: '0700'
@@ -81,27 +197,8 @@ write_files:
         if [ -f "$MYHOME/.kube/config" ] && [ -f "$MYHOME/provision_aio.sh" ] && command -v docker >/dev/null 2>&1 && command -v kubectl >/dev/null 2>&1 && command -v k3d >/dev/null 2>&1; then
           echo "System appears to be properly initialized. Skipping full initialization."
 
-          # Update MOTD to show system is ready
-          {
-            echo "+------------------------------------------------------------+"
-            echo "|          Azure IoT Operations Dev VM Setup                 |"
-            echo "+------------------------------------------------------------+"
-            echo "| Status: INITIALIZATION COMPLETE"
-            echo "| Base tools installation previously completed on $(cat ${INIT_COMPLETE_FLAG})"
-            echo "|"
-            echo "| The following tools are installed:" 
-            echo "| - Azure CLI (az)" 
-            echo "| - Docker" 
-            echo "| - kubectl" 
-            echo "| - k3d (Kubernetes cluster manager)" 
-            echo "| - k9s (Kubernetes terminal UI)" 
-            echo "| - mqttui (MQTT client UI)" 
-            echo "|" 
-            echo "| To complete setup, AS THE REGULAR USER (not root):" 
-            echo "| 1. $ az login" 
-            echo "| 2. $ ~/provision_aio.sh" 
-            echo "+------------------------------------------------------------+"
-          } > /etc/motd
+          # Run the MOTD update script to ensure the correct MOTD is displayed
+          /usr/local/bin/update_aio_motd.sh
 
           exit 0
         else
@@ -606,7 +703,12 @@ write_files:
       # Create initialization completion flag with timestamp
       date > "${INIT_COMPLETE_FLAG}"
 
-  # 5. Modified AIO provisioning script with restart resilience
+      # Enable the MOTD update service
+      systemctl daemon-reload
+      systemctl enable aio-motd.service
+      systemctl start aio-motd.service
+
+  # 7. Azure IoT Operations provisioning script with support for "Fully Provisioned" status
   - path: /root/provision_aio.sh
     owner: root:root
     permissions: '0755'
@@ -660,26 +762,12 @@ write_files:
              az iot ops show --name "$INSTANCE_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
             echo "Azure IoT Operations resources verified. Environment is already set up."
 
-            # Update MOTD
-            {
-              echo "+------------------------------------------------------------+"
-              echo "|          Azure IoT Operations Provisioning                 |"
-              echo "+------------------------------------------------------------+"
-              echo "| Status: COMPLETE"
-              echo "| Azure IoT Operations previously provisioned on $(cat ${PROVISION_COMPLETE_FLAG})"
-              echo "|"
-              echo "| Resource Group:   $RESOURCE_GROUP"
-              echo "| Cluster:          $CLUSTER_NAME"
-              echo "| Storage Account:  $STORAGE_ACCOUNT"
-              echo "| Schema Registry:  $SCHEMA_REGISTRY"
-              echo "| IoT Ops Instance: $INSTANCE_NAME"
-              echo "|"
-              echo "| Environment variables saved in: $ENV_VARS_FILE"
-              echo "| Run 'source $ENV_VARS_FILE' to load these variables"
-              echo "| Run 'k9s' to monitor your Kubernetes cluster"
-              echo "| Run 'az iot ops --help' to see available commands"
-              echo "+------------------------------------------------------------+"
-            } | sudo tee /etc/motd > /dev/null
+            # Update MOTD with fully provisioned status via the update script
+            sudo /usr/local/bin/update_aio_motd.sh
+
+            echo "Environment is fully provisioned and ready for use."
+            echo "To load the environment variables: source $ENV_VARS_FILE"
+            echo "To view the IoT Operations namespace: k9s -n azure-iot-operations"
 
             exit 0
           else
@@ -1024,23 +1112,20 @@ write_files:
 
       echo "Azure IoT Operations installation successful!"
 
-      final_status "COMPLETE" "Azure IoT Operations successfully installed" \
-        "Resource Group:   $RESOURCE_GROUP" \
-        "Cluster:          $CLUSTER_NAME" \
-        "Storage Account:  $STORAGE_ACCOUNT" \
-        "Schema Registry:  $SCHEMA_REGISTRY" \
-        "IoT Ops Instance: $INSTANCE_NAME" \
-        "" \
-        "Environment variables saved to: $ENV_VARS_FILE" \
-        "Run 'source $ENV_VARS_FILE' to load these variables" \
-        "Run 'k9s' to monitor your Kubernetes cluster" \
-        "Run 'az iot ops --help' to see available commands"
-
-
       # Create provisioning completion flag with timestamp
       date > "${PROVISION_COMPLETE_FLAG}"
 
-  # 6. Systemd service for initialization (unchanged)
+      # Update the MOTD to show fully provisioned status
+      sudo /usr/local/bin/update_aio_motd.sh
+
+      echo ""
+      echo "Azure IoT Operations has been fully provisioned."
+      echo "Environment variables saved to: $ENV_VARS_FILE"
+      echo "Run 'source $ENV_VARS_FILE' to load these variables"
+      echo "Run 'k9s' to monitor your Kubernetes cluster"
+      echo "Run 'k9s -n azure-iot-operations' to view the IoT namespace specifically"
+
+  # 8. Systemd service for initialization
   - path: /etc/systemd/system/aio-initialize.service
     owner: root:root
     permissions: '0644'
@@ -1058,8 +1143,15 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
-  # Enable and start the initialization service
+  # Create required directories
   - mkdir -p /root/.k9s
+
+  # Enable and start the MOTD service (which will display correct MOTD on reboots)
   - systemctl daemon-reload
+  - systemctl enable aio-motd.service
+  - systemctl start aio-motd.service
+
+  # Enable and start the initialization service
   - systemctl enable aio-initialize.service
   - systemctl start aio-initialize.service
+
