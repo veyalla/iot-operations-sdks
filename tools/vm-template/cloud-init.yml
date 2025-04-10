@@ -548,9 +548,15 @@ write_files:
       LOG_FILE="$HOME/aio-provision.log"
       exec > >(tee -a ${LOG_FILE}) 2>&1
 
+      # Create environment variables file
+      ENV_VARS_FILE="$HOME/aio-env.sh"
+      touch "$ENV_VARS_FILE"
+      chmod 600 "$ENV_VARS_FILE"
+
       echo "========================================================"
       echo "Starting Azure IoT Operations provisioning at $(date)"
       echo "Running as user: $(whoami)"
+      echo "Environment variables will be saved to: $ENV_VARS_FILE"
       echo "========================================================"
 
       # Check if running as root
@@ -561,7 +567,7 @@ write_files:
       fi
 
       # Total number of steps
-      TOTAL_STEPS=4
+      TOTAL_STEPS=6
 
       # Function to update status
       update_status() {
@@ -679,33 +685,57 @@ write_files:
         VM_NAME=$(hostname)
       fi
 
-      # Set resource name for Arc-enabled Kubernetes
-      RESOURCE_NAME="${VM_NAME}-k8s"
+      # Set resource names
+      CLUSTER_NAME="${VM_NAME}-k8s"
+      STORAGE_ACCOUNT="stiot$(echo $VM_NAME | md5sum | head -c 8)"
+      STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | cut -c 1-24)
+      SCHEMA_REGISTRY="${VM_NAME}-registry"
+      SCHEMA_REGISTRY_NAMESPACE="default"
+
+      # Save environment variables
+      echo "# Azure IoT Operations Environment Variables" > "$ENV_VARS_FILE"
+      echo "export SUBSCRIPTION_ID=\"$SUBSCRIPTION_ID\"" >> "$ENV_VARS_FILE"
+      echo "export RESOURCE_GROUP=\"$RESOURCE_GROUP\"" >> "$ENV_VARS_FILE"
+      echo "export LOCATION=\"$LOCATION\"" >> "$ENV_VARS_FILE"
+      echo "export VM_NAME=\"$VM_NAME\"" >> "$ENV_VARS_FILE"
+      echo "export CLUSTER_NAME=\"$CLUSTER_NAME\"" >> "$ENV_VARS_FILE"
+      echo "export STORAGE_ACCOUNT=\"$STORAGE_ACCOUNT\"" >> "$ENV_VARS_FILE"
+      echo "export SCHEMA_REGISTRY=\"$SCHEMA_REGISTRY\"" >> "$ENV_VARS_FILE"
+      echo "export SCHEMA_REGISTRY_NAMESPACE=\"$SCHEMA_REGISTRY_NAMESPACE\"" >> "$ENV_VARS_FILE"
 
       # Create resource group if it doesn't exist
       echo "Checking if resource group $RESOURCE_GROUP exists..."
-      az group show --name "$RESOURCE_GROUP" &>/dev/null || {
+      az group show --name "$RESOURCE_GROUP" &>/dev/null
+      if [ $? -ne 0 ]; then
         echo "Creating resource group $RESOURCE_GROUP in $LOCATION..."
-        az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
-      }
+        if ! az group create --name "$RESOURCE_GROUP" --location "$LOCATION"; then
+          echo "Error: Failed to create resource group $RESOURCE_GROUP."
+          exit 1
+        fi
+      else
+        echo "Resource group $RESOURCE_GROUP already exists."
+      fi
 
       echo "Using Azure configuration:"
       echo "Subscription ID: $SUBSCRIPTION_ID"
       echo "Resource Group:  $RESOURCE_GROUP"
       echo "Location:        $LOCATION"
       echo "VM Name:         $VM_NAME"
-      echo "K8s Resource:    $RESOURCE_NAME"
+      echo "Cluster Name:    $CLUSTER_NAME"
+      echo "Storage Account: $STORAGE_ACCOUNT"
+      echo "Schema Registry: $SCHEMA_REGISTRY"
 
       ##### Step 2: Connect K8s to Arc #####
       update_status "2" "Connecting to Azure Arc" \
         "Setting up Azure Arc connection" \
-        "Resource Name:    $RESOURCE_NAME" \
+        "Resource Name:    $CLUSTER_NAME" \
         "Resource Group:   $RESOURCE_GROUP" \
         "Location:         $LOCATION"
 
       # Add and update required Azure extensions
       echo "Adding/updating Azure extensions..."
       az extension add --upgrade --name connectedk8s --yes
+      az extension add --upgrade --name azure-iot-ops --yes
 
       # Ensure required providers are registered
       echo "Ensuring required resource providers are registered..."
@@ -736,109 +766,178 @@ write_files:
       done
 
       # Check if already connected to Arc
-      ARC_CONNECTED=false
-      ARC_CHECK=$(az connectedk8s show --name "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" 2>&1)
-      if [ $? -eq 0 ]; then
+      if az connectedk8s show --name "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null; then
         echo "Kubernetes cluster is already connected to Arc!"
-        ARC_CONNECTED=true
       else
-        # Connect to Arc
         echo "Connecting Kubernetes to Azure Arc..."
         # Clear any previous connection attempts
-        kubectl delete namespace azure-arc --ignore-not-found=true
+        if ! kubectl delete namespace azure-arc --ignore-not-found=true; then
+          echo "Failed to delete existing azure-arc namespace. Exiting."
+          exit 1
+        fi
 
         # Connect to Arc
-        az connectedk8s connect --name "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --location "$LOCATION"
-
-        # Wait for Arc connection to be established
-        echo "Waiting for Arc connection to be fully established..."
-        sleep 30
-        ARC_STATUS=$(az connectedk8s show --name "$RESOURCE_NAME" --resource-group "$RESOURCE_GROUP" --query "connectivityStatus" -o tsv 2>/dev/null)
-        if [ "$ARC_STATUS" == "Connected" ]; then
-          echo "Arc connection is established!"
-        else
-          echo "Arc connection status: $ARC_STATUS - continuing anyway"
+        if ! az connectedk8s connect --name "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP" --location "$LOCATION"; then
+          echo "Error: Failed to connect Kubernetes cluster to Azure Arc."
+          exit 1
         fi
       fi
 
       ##### Step 3: Create storage account #####
-      # Generate unique storage account name
-      UNIQUE_HASH=$(echo "$VM_NAME-$SUBSCRIPTION_ID" | md5sum | head -c 8)
-      STORAGE_ACCOUNT="stiot${UNIQUE_HASH}"
-      STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | tr '[:upper:]' '[:lower:]')
-      # Ensure storage account name is valid (3-24 chars, lowercase letters and numbers only)
-      STORAGE_ACCOUNT=$(echo "$STORAGE_ACCOUNT" | cut -c 1-24)
-
       update_status "3" "Creating Azure storage account" \
         "Storage Account:  $STORAGE_ACCOUNT" \
         "Resource Group:   $RESOURCE_GROUP" \
         "Location:         $LOCATION"
 
-      # Check if storage account already exists
-      echo "Checking if storage account '$STORAGE_ACCOUNT' already exists..."
-      STORAGE_EXISTS=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" 2>&1)
-      if [ $? -eq 0 ]; then
-        echo "Storage account '$STORAGE_ACCOUNT' already exists, skipping creation."
+      # Create storage account if it doesn't exist
+      echo "Checking if storage account '$STORAGE_ACCOUNT' exists..."
+      az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" &> /dev/null
+      if [ $? -ne 0 ]; then
+          echo "Creating storage account '$STORAGE_ACCOUNT'..."
+          az storage account create \
+              --name "$STORAGE_ACCOUNT" \
+              --location "$LOCATION" \
+              --resource-group "$RESOURCE_GROUP" \
+              --enable-hierarchical-namespace true \
+              --sku Standard_RAGRS \
+              --kind StorageV2 \
+              --output none
+          [ $? -ne 0 ] && echo "Error: Failed to create storage account." && exit 1
       else
-        echo "Creating storage account '$STORAGE_ACCOUNT'..."
-        az storage account create \
-          --name "$STORAGE_ACCOUNT" \
-          --resource-group "$RESOURCE_GROUP" \
-          --location "$LOCATION" \
-          --enable-hierarchical-namespace true \
-          --sku Standard_LRS
+          echo "Storage account '$STORAGE_ACCOUNT' already exists."
       fi
 
-      # Get storage account ID
-      SA_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+      # Get Storage Account Resource ID
+      SA_RESOURCE_ID=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+      echo "export SA_RESOURCE_ID=\"$SA_RESOURCE_ID\"" >> "$ENV_VARS_FILE"
 
       # Assign required roles - using current user's identity
       echo "Assigning storage permissions to current user..."
       CURRENT_USER_ID=$(az ad signed-in-user show --query id -o tsv)
+      if [ -z "$CURRENT_USER_ID" ]; then
+        echo "Error: Could not retrieve current user ID."
+        exit 1
+      fi
+
+      # Loop through roles and assign them
       for ROLE in "Storage Blob Data Owner" "Storage Blob Data Contributor"; do
         echo "Assigning $ROLE role..."
         az role assignment create \
           --assignee "$CURRENT_USER_ID" \
           --role "$ROLE" \
-          --scope "$SA_ID" || echo "WARNING: Could not assign $ROLE role, but continuing setup"
+          --scope "$SA_RESOURCE_ID" || echo "WARNING: Could not assign $ROLE role, but continuing setup"
       done
 
-      ##### Step 4: Install Azure IoT Operations #####
-      update_status "4" "Installing Azure IoT Operations" \
+      ##### Step 4: Initialize IoT Operations #####
+      update_status "4" "Initializing Azure IoT Operations" \
         "Installing AIO extensions and operators" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Cluster:          $CLUSTER_NAME" \
         "This may take several minutes..." \
         "Track detailed progress: $ tail -f $LOG_FILE"
 
-      # Add IoT Operations extension
-      echo "Adding Azure IoT Operations extension..."
-      az extension add --upgrade --name azure-iot-ops --yes
+      # Initialize IoT Ops if not already initialized
+      echo "Initializing IoT Operations on cluster..."
+      az iot ops show --cluster "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP" &> /dev/null
+      if [ $? -ne 0 ]; then
+          az iot ops init --cluster "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP"
+          [ $? -ne 0 ] && echo "Error: Failed to initialize IoT Operations." && exit 1
+      else
+          echo "IoT Operations already initialized on cluster."
+      fi
 
-      # Install IoT Operations
-      echo "Installing Azure IoT Operations components..."
-      az iot ops init --resource-group "$RESOURCE_GROUP" --cluster "$RESOURCE_NAME" --storage "$STORAGE_ACCOUNT"
+      ##### Step 5: Create Schema Registry #####
+      update_status "5" "Creating Schema Registry" \
+        "Setting up Schema Registry for IoT Operations" \
+        "Schema Registry:  $SCHEMA_REGISTRY" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Location:         $LOCATION"
+
+      # Create schema registry if it doesn't exist
+      echo "Checking if schema registry '$SCHEMA_REGISTRY' exists..."
+      az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" &> /dev/null
+      if [ $? -ne 0 ]; then
+          echo "Creating schema registry '$SCHEMA_REGISTRY'..."
+          az iot ops schema registry create \
+              --name "$SCHEMA_REGISTRY" \
+              --resource-group "$RESOURCE_GROUP" \
+              --registry-namespace "$SCHEMA_REGISTRY_NAMESPACE" \
+              --sa-resource-id "$SA_RESOURCE_ID" \
+              --output none
+          [ $? -ne 0 ] && echo "Error: Failed to create schema registry." && exit 1
+      else
+          echo "Schema registry '$SCHEMA_REGISTRY' already exists."
+      fi
+
+      # Get Schema Registry Resource ID
+      SR_RESOURCE_ID=$(az iot ops schema registry show --name "$SCHEMA_REGISTRY" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+      echo "export SR_RESOURCE_ID=\"$SR_RESOURCE_ID\"" >> "$ENV_VARS_FILE"
+
+      ##### Step 6: Create IoT Ops Instance #####
+      # Define instance name
+      INSTANCE_NAME="${CLUSTER_NAME}-instance"
+
+      update_status "6" "Creating IoT Operations instance" \
+        "Creating IoT Operations resources" \
+        "IoT Ops Instance: $INSTANCE_NAME" \
+        "Resource Group:   $RESOURCE_GROUP" \
+        "Schema Registry:  $SCHEMA_REGISTRY"
+
+      # Create IoT Ops instance if it doesn't exist
+      echo "Checking if IoT Operations instance '$INSTANCE_NAME' exists..."
+      az iot ops show --cluster "$CLUSTER_NAME" --resource-group "$RESOURCE_GROUP" --name "$INSTANCE_NAME" &> /dev/null
+      if [ $? -ne 0 ]; then
+          echo "Creating IoT Operations instance '$INSTANCE_NAME'..."
+          az iot ops create \
+              --cluster "$CLUSTER_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$INSTANCE_NAME" \
+              --sr-resource-id "$SR_RESOURCE_ID" \
+              --broker-frontend-replicas 1 \
+              --broker-frontend-workers 1 \
+              --broker-backend-part 1 \
+              --broker-backend-workers 1 \
+              --broker-backend-rf 2 \
+              --broker-mem-profile Low \
+              --output none
+          [ $? -ne 0 ] && echo "Error: Failed to create IoT Operations instance." && exit 1
+      else
+          echo "IoT Operations instance '$INSTANCE_NAME' already exists."
+      fi
+
+      # Save the instance name to env vars
+      echo "export INSTANCE_NAME=\"$INSTANCE_NAME\"" >> "$ENV_VARS_FILE"
 
       # Final check
-      CLUSTER_STATUS=$(az iot ops check --resource-group "$RESOURCE_GROUP" --cluster "$RESOURCE_NAME" 2>/dev/null)
+      echo "Performing final validation checks..."
+      az iot ops check --resource-group "$RESOURCE_GROUP" --cluster "$CLUSTER_NAME" &> /dev/null
       if [ $? -eq 0 ]; then
         echo "Azure IoT Operations installation successful!"
 
         final_status "COMPLETE" "Azure IoT Operations successfully installed" \
           "Resource Group:   $RESOURCE_GROUP" \
-          "Cluster:          $RESOURCE_NAME" \
+          "Cluster:          $CLUSTER_NAME" \
           "Storage Account:  $STORAGE_ACCOUNT" \
+          "Schema Registry:  $SCHEMA_REGISTRY" \
+          "IoT Ops Instance: $INSTANCE_NAME" \
           "" \
-          "Run 'k9s' to monitor your Kubernetes cluster." \
-          "Run 'az iot ops --help' to see available commands."
+          "Environment variables saved to: $ENV_VARS_FILE" \
+          "Run 'source $ENV_VARS_FILE' to load these variables" \
+          "Run 'k9s' to monitor your Kubernetes cluster" \
+          "Run 'az iot ops --help' to see available commands"
       else
         echo "Installation completed but verification failed. You may need to check manually."
 
         final_status "PARTIAL SUCCESS" "Setup completed with warnings" \
           "Resource Group:   $RESOURCE_GROUP" \
-          "Cluster:          $RESOURCE_NAME" \
+          "Cluster:          $CLUSTER_NAME" \
           "Storage Account:  $STORAGE_ACCOUNT" \
+          "Schema Registry:  $SCHEMA_REGISTRY" \
+          "IoT Ops Instance: $INSTANCE_NAME" \
           "" \
-          "You may need to run status checks manually:" \
-          "$ az iot ops check --resource-group $RESOURCE_GROUP --cluster $RESOURCE_NAME"
+          "Environment variables saved to: $ENV_VARS_FILE" \
+          "Run manual checks with:" \
+          "$ az iot ops check --resource-group $RESOURCE_GROUP --cluster $CLUSTER_NAME"
       fi
 
   # 6. Systemd service for initialization
